@@ -87,8 +87,6 @@ class GoogleSheetsRepository(Repository):
             raise SchemaError(f"Worksheet '{table}' has no header row.")
         headers = [h.strip() for h in values[0]]
         missing = [h for h in TABLES[table][1] if h not in headers]
-        # Payments.reverses_payment_id is optional for sheets created before reversals existed.
-        missing = [h for h in missing if not (table == "Payments" and h == "reverses_payment_id")]
         if missing:
             raise SchemaError(f"Worksheet '{table}' is missing columns: {', '.join(missing)}")
         rows = [r for r in values[1:] if any(c.strip() for c in r)]

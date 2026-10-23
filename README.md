@@ -1,6 +1,6 @@
 # Mobiq — Mobile Bill Splitter
 
-Streamlit app backed by Google Sheets for splitting monthly mobile bills: per-line shares, partial payments, historical dues, email sign-in, guest policy, and an admin console. Python 3.11+, `decimal.Decimal` for all money.
+Streamlit app backed by Google Sheets for splitting monthly mobile bills: per-line shares, paid/unpaid tracking, historical dues, email sign-in, guest policy, and an admin console. Python 3.11+, `decimal.Decimal` for all money.
 
 ## Status: what is and isn't verified
 
@@ -16,14 +16,14 @@ Follow the *smoke test* below with your own credentials before relying on it.
 ## Assumptions
 
 1. **Invitation model for registration.** An admin invites an email (creates an active row in `Users`); the invitee then signs in with an emailed code. Unknown or inactive emails never get a code and see the same message as valid ones. The very first admin is created from `auth.bootstrap_admin_email`, only while no admin exists.
-2. **Admins mark shares paid.** Users cannot submit payments. On *Shares & payments* each share has a **Paid** switch: on = one confirmed payment for the remaining balance; off = a reversal of every confirmed payment. There is no UI for partial payments, pending/rejected states or manual reversals; the calculations still honour such rows if they exist in the sheet (confirmed only).
+2. **Admins mark shares paid.** There is no separate payments table. Each row of `BillShares` has `paid` (TRUE/FALSE) and `paid_date`. On *Shares & payments* ticking a share's **Paid** checkbox marks it paid; unticking asks for confirmation first and marks it unpaid. Every change is written to `AuditLog` (who, when, which share). **A share is paid in full or not at all: there are no partial payments, payment methods, notes or per-payment history.** Users cannot change payment status.
 2a. **Notify (manual reminders).** Each unpaid share on *Shares & payments* has a **Notify** button that emails the line owner the due details (line, month, amount due, paid so far, balance, due date, status, other unpaid bills, payment instructions). It only sends when an admin clicks it, needs `[smtp]` in secrets, is refused for paid/draft shares and inactive owners, is limited to one email per share per 15 minutes, and is recorded in `AuditLog` (no message body stored). Nothing is ever sent automatically.
-3. **Status precedence:** `Paid` > `Overdue` > `Partial` > `Due`. A partially paid share past its due date shows *Overdue* (paid amount still shown). Due today is not overdue.
-4. **"Total collected"** = confirmed payments (capped at the amount due) against shares in the *current* period. Earlier months appear only under *Previous arrears* / *Historical dues*.
+3. **Status:** `Paid`, `Due` (unpaid, not yet late) or `Overdue` (unpaid and past its due date). Due today is not overdue.
+4. **"Total collected"** = amounts of shares marked paid in the *current* period. Earlier months appear only under *Previous arrears* / *Historical dues*.
 5. **Draft bills are invisible to users**; closed bills stay in historical dues until paid.
 6. Overpayment is rejected (confirmed payments may not exceed the amount due).
-7. Marking a share unpaid never edits history: it appends a **reversal** (negative confirmed row with `reverses_payment_id`). This adds one column to `Payments`; `Bills.line_ids` (comma-separated line ids; replaces a separate `BillLines` sheet) and the `AuditLog` worksheet are also additions to the spec'd model.
-8. `BillShares.amount_paid` / `payment_status` are written back for sheet readability but **all calculations derive from `Payments`**; never edit them by hand.
+7. `Bills.line_ids` (comma-separated line ids; replaces a separate `BillLines` sheet) and the `AuditLog` worksheet are additions to the spec'd model; `Payments` was merged into `BillShares`.
+8. Amount paid is derived: `amount_due` when `paid` is TRUE, otherwise 0. A paid share's amount cannot be edited until it is marked unpaid.
 9. Rows edited directly in the sheet are validated on load; malformed rows are skipped and listed as warnings in the admin dashboard.
 
 ## Architecture
@@ -38,7 +38,7 @@ services/
   auth_service.py           email-code auth, rate limiting, principal resolution
   access_service.py         read-side authorization (user/admin/guest views)
   bill_service.py           bills, bill lines, shares (publish/close/confirmations)
-  payment_service.py        paid/unpaid toggle (append-only payments + reversals)
+  payment_service.py        mark shares paid / unpaid
   directory_service.py      users, mobile lines, settings
   reminder_service.py       extension points (reminders, PDF import) - inert by default
   common.py                 Principal, require_admin, audit log, errors
@@ -63,7 +63,7 @@ Reads are cached per worksheet (`cache_ttl_seconds`, default 30) and invalidated
 - **Guests** see nothing by default. `guest_visibility` setting: `none` | `aggregate` (combined totals, no names) | `status_only` (anonymised "Line 1…" statuses). Treat guest mode as public.
 - **Privacy:** phone numbers are shown as `•••• 1234`; audit entries never contain full numbers, codes or credentials. All dynamic HTML is escaped. Sheet writes use `RAW` so values are never evaluated as formulas.
 - **Secrets** live only in Streamlit secrets / env. `.streamlit/secrets.toml` is git-ignored.
-- **Audit trail:** `AuditLog` is append-only; payments are never edited or deleted.
+- **Audit trail:** `AuditLog` is append-only; every paid/unpaid change is recorded there.
 
 ### Hosting and session limitations
 - Streamlit sessions live in server memory: **refreshing the browser tab signs the user out**, and a server restart invalidates everything (including pending codes and rate-limit counters, which are per-process).
@@ -96,7 +96,7 @@ Copy `.streamlit/secrets.toml.example` to `.streamlit/secrets.toml` and fill in:
 Sign in with `bootstrap_admin_email`, open **Admin Console**, invite users, add lines, create a bill, split, publish.
 
 ### Smoke test (do this once with real credentials)
-1. App starts without a configuration error. 2. Sign-in email arrives and the code works. 3. Create a draft bill → rows appear in `Bills`, `BillShares`, `AuditLog`. 4. Publish, record a confirmed payment → `Payments` row, `BillShares.amount_paid` updates. 5. Edit the same bill in the sheet and in the app to see the conflict message.
+1. App starts without a configuration error. 2. Sign-in email arrives and the code works. 3. Create a draft bill → rows appear in `Bills`, `BillShares`, `AuditLog`. 4. Publish, tick a share's Paid checkbox → `BillShares.paid` becomes TRUE with a `paid_date`, and an `AuditLog` row appears. 5. Edit the same bill in the sheet and in the app to see the conflict message.
 
 ### Deployment (Streamlit Community Cloud, untested here)
 Push the repo (without `secrets.toml`), create the app pointing at `app.py`, paste the secrets TOML into *Settings → Secrets*. Pin Python 3.11+ in the app settings. Read the limitations above first.
@@ -105,7 +105,7 @@ Push the repo (without `secrets.toml`), create the app pointing at `app.py`, pas
 ```powershell
 .\.venv\Scripts\python -m pytest -q
 ```
-Coverage: paid/due/partial/overdue; current payment with previous arrears; multiple lines per email with independent payment histories; shared bills without duplicate totals; multiple partial payments; duplicate prevention; invalid amounts; history preserved on number change/deactivation; reversals; guest restrictions; admin authorization (non-admin, guest, forged, demoted); auth failures (wrong/expired/replayed codes, inactive users, rate limits); Sheets adapter caching/retry/failure handling (fake client); malformed rows; theme tokens (single accent, responsive CSS, focus styles); HTML escaping; headless app flows.
+Coverage: paid/due/overdue; current-month payment with previous arrears; multiple lines per email with independent payment histories; shared bills without duplicate totals; duplicate prevention; invalid amounts; history preserved on number change/deactivation; guest restrictions; admin authorization (non-admin, guest, forged, demoted); auth failures (wrong/expired/replayed codes, inactive users, rate limits); Sheets adapter caching/retry/failure handling (fake client); malformed rows; theme tokens (single accent, responsive CSS, focus styles); HTML escaping; headless app flows.
 
 ## Design system
 Tokens live in `ui/theme.py` (canvas `#0A0A0F`, surface `#161B22`, accent `#7C3AED` only, text `#FFFFFF`/`#8B949E`/`#484F58`, hairline borders) and are mirrored in `.streamlit/config.toml`. Payment states use a green (Paid) / yellow (Partial) / red (Due, Overdue) cue, always with a text label and glyph. The tokens test fails if any other hex colour is introduced.

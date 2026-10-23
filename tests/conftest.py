@@ -63,15 +63,6 @@ def alex():
     return Principal("u_alex", "alex@example.com", "Alex", "user")
 
 
-def add_payment(repo, share_id, amount, status="confirmed", pid=None, date="2026-10-05"):
-    """Insert a payment row directly (partial/pending payments can exist in the sheet; the UI only toggles paid)."""
-    import itertools
-    n = len(repo.list("Payments"))
-    repo.append("Payments", {"payment_id": pid or f"p_t{n}", "share_id": share_id, "user_id": "u_x", "amount": amount,
-                             "payment_date": date, "payment_status": status, "payment_method": "", "notes": "",
-                             "created_at": "t", "reverses_payment_id": ""})
-
-
 def sample_runtime():
     """A Runtime over an in-memory repository holding the SAMPLE dataset (no Google credentials needed)."""
     from sample_data import load_sample

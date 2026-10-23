@@ -2,8 +2,7 @@ from datetime import date
 from decimal import Decimal as D
 
 from core.snapshot import load_snapshot
-from services import bill_service
-from tests.conftest import add_payment
+from services import bill_service, payment_service
 from services.access_service import visible_views
 from utils.calculations import (
     Status, build_share_views, derive_status, equal_split, line_summary, monthly_bill_totals,
@@ -23,9 +22,7 @@ def test_status_paid_due_partial_overdue():
     assert derive_status(D("40"), D("40"), future, TODAY) is Status.PAID
     assert derive_status(D("40"), D("40"), past, TODAY) is Status.PAID       # paid late is still paid
     assert derive_status(D("40"), D("0"), future, TODAY) is Status.DUE
-    assert derive_status(D("40"), D("15"), future, TODAY) is Status.PARTIAL
     assert derive_status(D("40"), D("0"), past, TODAY) is Status.OVERDUE
-    assert derive_status(D("40"), D("15"), past, TODAY) is Status.OVERDUE    # precedence documented in module
     assert derive_status(D("40"), D("0"), TODAY, TODAY) is Status.DUE        # due today is not overdue
 
 
@@ -41,7 +38,7 @@ def _bill(ctx, admin, month, total, due, lines, shares, publish=True):
 def _pay(ctx, admin, bill, line, amount):
     snap = load_snapshot(ctx.repo)
     sid = next(s.share_id for s in snap.shares if s.bill_id == bill.bill_id and s.line_id == line)
-    add_payment(ctx.repo, sid, amount)
+    payment_service.set_share_paid(ctx, admin, sid, True)  # a share is simply paid or not
 
 
 def _views(ctx):
@@ -83,25 +80,27 @@ def test_shared_bill_total_not_duplicated(world, ctx, admin):
     assert monthly_bill_totals(snap.bills + snap.bills) == {"2026-10": D("120.00")}  # same bill id twice -> once
 
 
-def test_multiple_partial_payments_accumulate(world, ctx, admin):
-    b = _bill(ctx, admin, "2026-10", "90.00", "2026-10-25", ["l_sam"], ["90.00"])
-    _pay(ctx, admin, b, "l_sam", "30.00")
-    _, v = _views(ctx)
-    assert v[0].status is Status.PARTIAL and v[0].outstanding == D("60.00")
-    _pay(ctx, admin, b, "l_sam", "25.50")
-    _, v = _views(ctx)
-    assert v[0].paid == D("55.50") and v[0].outstanding == D("34.50")
-    _pay(ctx, admin, b, "l_sam", "34.50")
-    _, v = _views(ctx)
-    assert v[0].status is Status.PAID
+# DISABLED: partial/pending payments and per-payment history were removed (a share is now simply paid or unpaid).
+# def test_multiple_partial_payments_accumulate(world, ctx, admin):
+#     b = _bill(ctx, admin, "2026-10", "90.00", "2026-10-25", ["l_sam"], ["90.00"])
+#     _pay(ctx, admin, b, "l_sam", "30.00")
+#     _, v = _views(ctx)
+#     assert v[0].status is Status.PARTIAL and v[0].outstanding == D("60.00")
+#     _pay(ctx, admin, b, "l_sam", "25.50")
+#     _, v = _views(ctx)
+#     assert v[0].paid == D("55.50") and v[0].outstanding == D("34.50")
+#     _pay(ctx, admin, b, "l_sam", "34.50")
+#     _, v = _views(ctx)
+#     assert v[0].status is Status.PAID
 
 
-def test_only_confirmed_payments_count(world, ctx, admin):
-    _bill(ctx, admin, "2026-10", "50.00", "2026-10-25", ["l_sam"], ["50.00"])
-    sid = load_snapshot(ctx.repo).shares[0].share_id
-    add_payment(ctx.repo, sid, "50.00", status="pending")
-    _, v = _views(ctx)
-    assert v[0].paid == D("0.00") and v[0].status is Status.DUE
+# DISABLED: partial/pending payments and per-payment history were removed (a share is now simply paid or unpaid).
+# def test_only_confirmed_payments_count(world, ctx, admin):
+#     _bill(ctx, admin, "2026-10", "50.00", "2026-10-25", ["l_sam"], ["50.00"])
+#     sid = load_snapshot(ctx.repo).shares[0].share_id
+#     add_payment(ctx.repo, sid, "50.00", status="pending")
+#     _, v = _views(ctx)
+#     assert v[0].paid == D("0.00") and v[0].status is Status.DUE
 
 
 def test_draft_bills_excluded_from_user_figures(world, ctx, admin):

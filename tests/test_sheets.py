@@ -145,7 +145,10 @@ def test_missing_columns_raise_schema_error(ss):
         r.list("Users")
 
 
-def test_blank_rows_ignored_and_payments_legacy_header_allowed(ss):
-    ss.sheets["Payments"].values = [[h for h in TABLES["Payments"][1] if h != "reverses_payment_id"], [""] * 9]
-    r = GoogleSheetsRepository(ss)
-    assert r.list("Payments") == []
+# DISABLED: the Payments worksheet no longer exists.
+# def test_blank_rows_ignored_and_payments_legacy_header_allowed(ss):
+#     ss.sheets["Payments"].values = [[h for h in TABLES["Payments"][1] if h != "reverses_payment_id"], [""] * 9]
+#     r = GoogleSheetsRepository(ss)
+#     assert r.list("Payments") == []
+
+

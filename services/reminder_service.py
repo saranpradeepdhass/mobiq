@@ -111,7 +111,6 @@ def compose_reminder(app_name: str, view: ShareView, currency: str, instructions
         ("Line", f"{line}{number}"),
         ("Billing month", month_label(view.month)),
         ("Amount due", format_money(view.amount_due, currency)),
-        ("Paid so far", format_money(view.paid, currency)),
         ("Balance to pay", format_money(view.outstanding, currency)),
         ("Due date", date_label(view.due_date)),
         ("Status", view.status.value),

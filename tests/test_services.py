@@ -9,9 +9,9 @@ from services.common import (
     GUEST, AuthorizationError, BusinessRuleError, ConfirmationRequired, Principal,
 )
 from services.repository import DuplicateError, StorageError
-from utils.calculations import build_share_views, confirmed_paid
+from utils.calculations import build_share_views
 from utils.validators import ValidationError
-from tests.conftest import add_payment, add_user
+from tests.conftest import add_user
 
 
 def make_bill(ctx, admin, lines=("l_alex1", "l_sam"), total="100.00", shares=("60.00", "40.00"), month="2026-10"):
@@ -90,46 +90,34 @@ def test_concurrent_edit_detected(world, ctx, admin):
         bill_service.update_bill(ctx, admin, b.bill_id, total_bill="102.00", expected_updated_at=b.updated_at)
 
 
-# ---- payments: paid toggle, audit trail ----------------------------------------
-def test_mark_paid_settles_remaining_balance_and_is_idempotent(world, ctx, admin):
+# ---- paid flag ---------------------------------------------------------------------
+def test_mark_paid_and_unpaid_sets_flag_date_and_audit(world, ctx, admin):
     b = make_bill(ctx, admin)
     bill_service.publish_bill(ctx, admin, b.bill_id, confirm=True)
     sid = share_id(ctx, b, "l_sam")
-    add_payment(ctx.repo, sid, "15.00")  # an earlier partial payment already exists
     payment_service.set_share_paid(ctx, admin, sid, True)
-    payment_service.set_share_paid(ctx, admin, sid, True)  # second call changes nothing
-    snap = load_snapshot(ctx.repo)
-    assert confirmed_paid(snap.payments, sid) == D("40.00") and len(snap.payments) == 2
-    assert ctx.repo.get("BillShares", sid)["amount_paid"] == "40.00"  # derived cache written back
-
-
-def test_mark_unpaid_reverses_every_confirmed_payment_with_audit_trail(world, ctx, admin):
-    b = make_bill(ctx, admin)
-    bill_service.publish_bill(ctx, admin, b.bill_id, confirm=True)
-    sid = share_id(ctx, b, "l_sam")
-    add_payment(ctx.repo, sid, "15.00", pid="p_a")
-    add_payment(ctx.repo, sid, "25.00", pid="p_b")
+    payment_service.set_share_paid(ctx, admin, sid, True)  # second call changes nothing (and is not audited twice)
+    share = load_snapshot(ctx.repo).share(sid)
+    assert share.paid and share.paid_date == date(2026, 10, 22)
+    views = build_share_views(load_snapshot(ctx.repo), date(2026, 10, 22))
+    assert next(v for v in views if v.share.share_id == sid).outstanding == D("0.00")
     payment_service.set_share_paid(ctx, admin, sid, False)
-    snap = load_snapshot(ctx.repo)
-    assert confirmed_paid(snap.payments, sid) == D("0.00")
-    assert len(snap.payments) == 4 and snap.payment("p_a").payment_status == "confirmed"  # originals untouched
-    assert sorted(p.reverses_payment_id for p in snap.payments if p.reverses_payment_id) == ["p_a", "p_b"]
-    payment_service.set_share_paid(ctx, admin, sid, False)  # nothing left to reverse
-    assert len(load_snapshot(ctx.repo).payments) == 4
-    payment_service.set_share_paid(ctx, admin, sid, True)  # paid again after being unpaid
-    assert confirmed_paid(load_snapshot(ctx.repo).payments, sid) == D("40.00")
+    share = load_snapshot(ctx.repo).share(sid)
+    assert not share.paid and share.paid_date is None
     actions = [r["action"] for r in ctx.repo.list("AuditLog")]
-    assert "payment.record" in actions and "payment.reverse" in actions
+    assert actions.count("share.paid") == 1 and actions.count("share.unpaid") == 1
 
 
-def test_pending_and_rejected_rows_are_ignored_by_toggle(world, ctx, admin):
+def test_paid_share_amount_cannot_be_edited_until_unpaid(world, ctx, admin):
     b = make_bill(ctx, admin)
     bill_service.publish_bill(ctx, admin, b.bill_id, confirm=True)
     sid = share_id(ctx, b, "l_sam")
-    add_payment(ctx.repo, sid, "10.00", status="pending")
-    add_payment(ctx.repo, sid, "15.00", status="rejected")
     payment_service.set_share_paid(ctx, admin, sid, True)
-    assert confirmed_paid(load_snapshot(ctx.repo).payments, sid) == D("40.00")  # pending/rejected never counted
+    with pytest.raises(BusinessRuleError, match="unpaid"):
+        bill_service.update_share(ctx, admin, sid, amount_due="45.00", confirm_material_change=True)
+    payment_service.set_share_paid(ctx, admin, sid, False)
+    bill_service.update_share(ctx, admin, sid, amount_due="45.00", confirm_material_change=True)
+    assert load_snapshot(ctx.repo).share(sid).amount_due == D("45.00")
 
 
 # ---- lines: history preserved ------------------------------------------------------

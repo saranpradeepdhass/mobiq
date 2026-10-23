@@ -50,14 +50,11 @@ def sample_rows(today: date | None = None) -> dict[str, list[dict]]:
         "b_m1": {"l_admin": "42.00", "l_alex1": "42.00", "l_alex2": "42.00", "l_sam": "42.00", "l_jo": "42.00"},
         "b_m0": {"l_admin": "43.00", "l_alex1": "43.00", "l_alex2": "43.00", "l_sam": "43.00", "l_jo": "43.00"},
     }
-    payments = [  # (share bill, line, amount, status)
-        ("b_m3", "l_alex1", "40.00"), ("b_m3", "l_alex2", "40.00"), ("b_m3", "l_sam", "40.00"), ("b_m3", "l_jo", "40.00"),
-        ("b_m3", "l_admin", "40.00"), ("b_m2", "l_admin", "40.00"), ("b_m2", "l_alex1", "40.00"),
-        ("b_m2", "l_sam", "40.00"), ("b_m2", "l_jo", "20.00"),            # Jo: arrears from two months ago
-        ("b_m1", "l_admin", "42.00"), ("b_m1", "l_alex1", "42.00"), ("b_m1", "l_alex2", "20.00"),
-        ("b_m1", "l_sam", "42.00"), ("b_m0", "l_admin", "43.00"), ("b_m0", "l_alex1", "43.00"),
-        ("b_m0", "l_sam", "20.00"),
-    ]
+    # Shares settled in full; everything else is unpaid (Jo, Alex work and Sam still owe).
+    paid_set = ({("b_m3", ln) for ln in ("l_admin", "l_alex1", "l_alex2", "l_sam", "l_jo")}
+                | {("b_m2", ln) for ln in ("l_admin", "l_alex1", "l_sam")}
+                | {("b_m1", ln) for ln in ("l_admin", "l_alex1", "l_sam")}
+                | {("b_m0", ln) for ln in ("l_admin", "l_alex1")})
     rows: dict[str, list[dict]] = {t: [] for t in TABLES}
     for uid, name, email, role in users:
         rows["Users"].append({"user_id": uid, "name": name, "email": email, "role": role,
@@ -70,16 +67,11 @@ def sample_rows(today: date | None = None) -> dict[str, list[dict]]:
                               "bill_due_date": due(ym), "bill_status": status, "created_at": ts, "updated_at": ts,
                               "line_ids": ",".join(amounts[bid])})
         for lid, amt in amounts[bid].items():
+            is_paid = (bid, lid) in paid_set
             rows["BillShares"].append({"share_id": f"s_{bid}_{lid}", "bill_id": bid, "line_id": lid,
-                                       "user_id": owner[lid], "amount_due": amt, "amount_paid": "", "payment_status": "",
+                                       "user_id": owner[lid], "amount_due": amt,
+                                       "paid": fmt_bool(is_paid), "paid_date": f"{ym}-15" if is_paid else "",
                                        "updated_at": ts})
-    for i, (bid, lid, amt) in enumerate(payments):
-        ym = next(b[1] for b in bills if b[0] == bid)
-        pd = f"{ym}-{min(20, 10 + i % 10):02d}"
-        rows["Payments"].append({"payment_id": f"p_{i:03d}", "share_id": f"s_{bid}_{lid}", "user_id": owner[lid],
-                                 "amount": amt, "payment_date": pd, "payment_status": "confirmed",
-                                 "payment_method": "SAMPLE transfer", "notes": "SAMPLE data", "created_at": ts,
-                                 "reverses_payment_id": ""})
     for k, v in [("app_name", "Mobiq"), ("currency", "USD"), ("timezone", "America/New_York"),
                  ("current_billing_period", m0), ("default_due_day", "20"), ("guest_visibility", "none"),
                  ("payment_instructions", "SAMPLE: Send your share via Zelle to billing@example.com"),

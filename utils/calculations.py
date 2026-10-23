@@ -1,10 +1,9 @@
 """Pure business rules. No I/O, no Streamlit. All money is Decimal.
 
 Rules
-- Only confirmed payments count (reversals are confirmed negative entries).
-- outstanding = max(amount_due - confirmed_payments, 0)
-- Status precedence: Paid (nothing owed) > Overdue (owed and past due) > Partial (some paid) > Due.
-  A partially paid share that is past due is therefore "Overdue"; the paid amount is still shown.
+- A share is either paid (the whole amount_due) or unpaid; there are no partial payments.
+- outstanding = amount_due when unpaid, 0 when paid.
+- Status: Paid (settled) > Overdue (unpaid and past its due date) > Due (unpaid, not yet late).
 - Aggregations sum *shares*, never bill totals, so a bill shared by N lines is counted once.
 - Draft bills are excluded from every user-facing figure.
 """
@@ -16,7 +15,7 @@ from datetime import date
 from decimal import Decimal
 from enum import Enum
 
-from core.models import Bill, MobileLine, Payment, Share, Snapshot, User
+from core.models import Bill, MobileLine, Share, Snapshot, User
 
 ZERO = Decimal("0.00")
 TWO = Decimal("0.01")
@@ -24,18 +23,12 @@ TWO = Decimal("0.01")
 
 class Status(str, Enum):
     PAID = "Paid"
-    PARTIAL = "Partial"
     DUE = "Due"
     OVERDUE = "Overdue"
 
 
 def q(x: Decimal) -> Decimal:
     return x.quantize(TWO)
-
-
-def confirmed_paid(payments: list[Payment], share_id: str) -> Decimal:
-    return q(sum((p.amount for p in payments
-                  if p.share_id == share_id and p.payment_status == "confirmed"), ZERO))
 
 
 def outstanding(amount_due: Decimal, paid: Decimal) -> Decimal:
@@ -47,8 +40,6 @@ def derive_status(amount_due: Decimal, paid: Decimal, due_date: date, today: dat
         return Status.PAID
     if today > due_date:
         return Status.OVERDUE
-    if paid > 0:
-        return Status.PARTIAL
     return Status.DUE
 
 
@@ -60,8 +51,6 @@ def aggregate_status(views: list["ShareView"], today: date) -> Status:
         return Status.PAID
     if any(v.outstanding > 0 and today > v.due_date for v in views):
         return Status.OVERDUE
-    if sum((v.paid for v in views), ZERO) > 0:
-        return Status.PARTIAL
     return Status.DUE
 
 
@@ -89,10 +78,6 @@ class ShareView:
 
 
 def build_share_views(snap: Snapshot, today: date, *, include_drafts: bool = False) -> list[ShareView]:
-    paid_by_share: dict[str, Decimal] = defaultdict(lambda: ZERO)
-    for p in snap.payments:
-        if p.payment_status == "confirmed":
-            paid_by_share[p.share_id] += p.amount
     bills = {b.bill_id: b for b in snap.bills}
     lines = {x.line_id: x for x in snap.lines}
     users = {u.user_id: u for u in snap.users}
@@ -101,7 +86,7 @@ def build_share_views(snap: Snapshot, today: date, *, include_drafts: bool = Fal
         bill = bills.get(s.bill_id)
         if bill is None or (bill.bill_status == "draft" and not include_drafts):
             continue
-        paid = q(paid_by_share[s.share_id])
+        paid = q(s.amount_due) if s.paid else ZERO
         views.append(ShareView(
             share=s, bill=bill, line=lines.get(s.line_id), user=users.get(s.user_id), paid=paid,
             outstanding=outstanding(s.amount_due, paid),
@@ -218,9 +203,8 @@ def monthly_share_totals(views: list[ShareView]) -> dict[str, Decimal]:
     return {m: q(v) for m, v in sorted(out.items())}
 
 
-def total_paid(views: list[ShareView], payments: list[Payment]) -> tuple[Decimal, date | None]:
-    """Net confirmed payments across the given shares (all months) and the earliest payment date."""
-    ids = {v.share.share_id for v in views}
-    mine = [p for p in payments if p.share_id in ids and p.payment_status == "confirmed"]
-    since = min((p.payment_date for p in mine if p.amount > 0), default=None)
-    return q(sum((p.amount for p in mine), ZERO)), since
+def total_paid(views: list[ShareView]) -> tuple[Decimal, date | None]:
+    """Sum of paid shares (all months) and the earliest date any of them was marked paid."""
+    paid = [v for v in views if v.share.paid]
+    since = min((v.share.paid_date for v in paid if v.share.paid_date), default=None)
+    return q(sum((v.paid for v in paid), ZERO)), since

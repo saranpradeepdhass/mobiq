@@ -171,7 +171,7 @@ def _paid_changed(ctx, actor, share_id: str, key: str) -> None:
 @st.dialog("Mark as unpaid?", dismissible=False)  # only Yes / Cancel close it, so the choice is always explicit
 def _confirm_unpaid_dialog(ctx, actor, share_id: str, who: str) -> None:
     st.write(f"Are you sure you want to mark **{who}** as **unpaid**? "
-             "The recorded payment will be reversed (kept in the audit trail).")
+             "The change is recorded in the audit log.")
     yes, no = st.columns(2)
     if yes.button("Yes, mark unpaid", type="primary", key=f"unpaid_yes_{share_id}", width="stretch"):
         st.session_state.pop("mq_confirm_unpaid", None)

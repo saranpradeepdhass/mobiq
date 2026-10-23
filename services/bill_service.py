@@ -7,7 +7,7 @@ from services.common import (
     BusinessRuleError, ConfirmationRequired, Principal, ServiceContext, audit, require_admin,
 )
 from services.repository import DuplicateError, NotFoundError
-from utils.calculations import confirmed_paid, equal_split, reconcile
+from utils.calculations import equal_split, reconcile
 from utils.validators import ValidationError, parse_date, parse_money, parse_month
 
 
@@ -124,7 +124,7 @@ def close_bill(ctx: ServiceContext, actor: Principal, bill_id: str, *, confirm: 
 
 def _share_row(share_id, bill_id, line_id, user_id, amount, now):
     return {"share_id": share_id, "bill_id": bill_id, "line_id": line_id, "user_id": user_id,
-            "amount_due": str(amount), "amount_paid": "0.00", "payment_status": "unpaid", "updated_at": now}
+            "amount_due": str(amount), "paid": "FALSE", "paid_date": "", "updated_at": now}
 
 
 def create_share(ctx: ServiceContext, actor: Principal, *, bill_id: str, line_id: str, amount_due,
@@ -192,11 +192,8 @@ def update_share(ctx: ServiceContext, actor: Principal, share_id: str, *, amount
             raise BusinessRuleError("Closed bills cannot be changed.")
         if bill.bill_status == "published" and not confirm_material_change:
             raise ConfirmationRequired("Changing a published share requires confirmation.")
-        paid = confirmed_paid(snap.payments, share_id)
-        if amount < paid:
-            raise BusinessRuleError(f"Amount due cannot be lower than confirmed payments ({paid}).")
+        if share.paid and amount != share.amount_due:
+            raise BusinessRuleError("This share is marked paid. Mark it unpaid before changing the amount.")
         ctx.repo.update("BillShares", share_id, {"amount_due": str(amount), "updated_at": ctx.stamp()},
                         expected_updated_at=expected_updated_at)
-        from services.payment_service import refresh_share_cache
-        refresh_share_cache(ctx, share_id)
         audit(ctx, actor, "share.update", "share", share_id, f"amount {share.amount_due}->{amount}")

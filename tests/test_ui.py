@@ -61,8 +61,8 @@ def test_demo_dataset_dashboard_numbers(repo):
     assert snap.warnings == []
     today = date(2026, 10, 22)
     s = summarize(build_share_views(snap, today), snap.settings.period(datetime(2026, 10, 22, tzinfo=timezone.utc)), today)
-    assert s.charges == D("215.00") and s.collected == D("106.00") and s.outstanding == D("109.00")
-    assert s.previous_outstanding == D("124.00")  # Jo 20 + Alex work 40 (two months ago); Alex work 22 + Jo 42 (last month)
+    assert s.charges == D("215.00") and s.collected == D("86.00") and s.outstanding == D("129.00")
+    assert s.previous_outstanding == D("164.00")  # Alex work and Jo are unpaid for two months ago and last month
 
 
 def test_chart_is_single_accent_smooth_line():
@@ -147,7 +147,7 @@ def test_admin_console_renders_all_tabs():
     assert [t.label for t in at.tabs] == ["Shares & payments", "Bills", "Lines & users", "Settings"]
     page = " ".join(m.value for m in at.markdown)
     assert "Billing periods" in page and "Settled" in page and "Pending" in page
-    assert "$106.00" in page and "$109.00" in page  # current month: collected vs still to pay, all users
+    assert "$86.00" in page and "$129.00" in page  # current month: collected vs still to pay, all users
     assert not any("Create bill" in e.label for e in at.expander) and "Manage a bill" not in page  # hidden
 
 
@@ -167,10 +167,10 @@ def test_user_payments_made_table_monthwise(repo):
     snap = load_snapshot(repo)
     views = build_share_views(snap, date(2026, 10, 22))
     alex = Principal("u_alex", "alex@example.com", "Alex", "user")
-    mine = [v for v in visible_views(alex, views) if v.paid > 0]
-    html = ui.payments_made_table(mine, snap.payments, "USD")
+    mine = [v for v in visible_views(alex, views) if v.share.paid]
+    html = ui.payments_made_table(mine, "USD")
     assert html.count("<tr>") == len(mine) + 1 and "Sam phone" not in html  # header + one row per paid month/line
-    assert "Last payment" in html
+    assert "Paid on" in html
 
 
 def _toggle_script():
@@ -204,7 +204,7 @@ def test_admin_paid_checkbox_marks_paid_and_unticking_asks_first():
     paid = next(c for c in _paid_boxes(at) if c.value)
     paid.uncheck().run()  # unticking must NOT change anything yet; a confirmation dialog is shown instead
     assert not at.exception
-    assert [c.value for c in _paid_boxes(at)].count(False) == 2  # box restored, no payment reversed
+    assert [c.value for c in _paid_boxes(at)].count(False) == 2  # box restored, nothing changed
     assert "Are you sure you want to mark" in " ".join(m.value for m in at.markdown)
 
     next(b for b in at.button if b.key and b.key.startswith("unpaid_no_")).click().run()  # Cancel

@@ -62,7 +62,7 @@ def render(rt, principal: Principal) -> None:
     cur_due_dates = [v.due_date for v in scope_views if v.month == period]
     due_on = min(cur_due_dates) if cur_due_dates else date(int(period[:4]), int(period[5:7]), settings.default_due_day)
     balance_due = s.outstanding + s.previous_outstanding  # unpaid balance only; paid amounts are excluded
-    paid_total, paid_since = total_paid(scope_views, snap.payments)
+    paid_total, paid_since = total_paid(scope_views)
     ui.render(ui.grid([
         ui.metric_card("Total due", format_money(balance_due, cur),
                        f"balance across {s.outstanding_count + s.previous_count} unpaid bill(s)", focus=True),
@@ -91,11 +91,11 @@ def render(rt, principal: Principal) -> None:
             ui.render(ui.empty_state("No bills this period", "No published bill covers this billing period yet."))
     else:  # users: what they have paid so far, one row per month and line
         ui.section("Payments made")
-        paid_views = [v for v in scope_views if v.paid > 0]
+        paid_views = [v for v in scope_views if v.share.paid]
         if paid_views:
-            ui.render(ui.payments_made_table(paid_views, snap.payments, cur))
+            ui.render(ui.payments_made_table(paid_views, cur))
         else:
-            ui.render(ui.empty_state("No payments yet", "Confirmed payments will appear here, month by month."))
+            ui.render(ui.empty_state("No payments yet", "Shares marked paid will appear here, month by month."))
 
     hist = previous_views(scope_views, period)  # unpaid only; settled months are not listed
     if hist:

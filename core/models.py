@@ -12,7 +12,7 @@ from decimal import Decimal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from utils.validators import (
-    BILL_STATUSES, GUEST_POLICIES, PAYMENT_STATUSES, ROLES, ValidationError, choice,
+    BILL_STATUSES, GUEST_POLICIES, ROLES, ValidationError, choice,
     clean_text, normalize_email, normalize_phone, parse_bool, parse_date, parse_money, parse_month,
 )
 
@@ -24,10 +24,7 @@ TABLES: dict[str, tuple[str, list[str]]] = {
     "Bills": ("bill_id", ["bill_id", "billing_month", "total_bill", "bill_due_date",
                           "bill_status", "created_at", "updated_at", "line_ids"]),
     "BillShares": ("share_id", ["share_id", "bill_id", "line_id", "user_id", "amount_due",
-                                "amount_paid", "payment_status", "updated_at"]),
-    "Payments": ("payment_id", ["payment_id", "share_id", "user_id", "amount", "payment_date",
-                                "payment_status", "payment_method", "notes", "created_at",
-                                "reverses_payment_id"]),
+                                "paid", "paid_date", "updated_at"]),
     "Settings": ("key", ["key", "value", "updated_at"]),
     "AuditLog": ("audit_id", ["audit_id", "timestamp", "actor_user_id", "action",
                               "entity_type", "entity_id", "details"]),
@@ -132,16 +129,20 @@ class Bill:
 
 @dataclass(frozen=True)
 class Share:
+    """One line's share of a bill. Payment is a simple flag: paid or not (no partial payments)."""
     share_id: str
     bill_id: str
     line_id: str
     user_id: str
     amount_due: Decimal
     updated_at: str
-    # amount_paid / payment_status columns are denormalised caches; calculations never read them.
+    paid: bool = False
+    paid_date: date | None = None
 
     @classmethod
     def from_row(cls, r: dict) -> "Share":
+        paid = parse_bool(r.get("paid") or "FALSE", "paid")
+        raw_date = str(r.get("paid_date") or "").strip()
         return cls(
             share_id=clean_text(r.get("share_id"), "share_id", max_len=64),
             bill_id=clean_text(r.get("bill_id"), "bill_id", max_len=64),
@@ -149,44 +150,9 @@ class Share:
             user_id=clean_text(r.get("user_id"), "user_id", max_len=64),
             amount_due=parse_money(r.get("amount_due"), "amount_due", allow_zero=True),
             updated_at=str(r.get("updated_at") or ""),
+            paid=paid,
+            paid_date=parse_date(raw_date, "paid_date") if (paid and raw_date) else None,
         )
-
-
-@dataclass(frozen=True)
-class Payment:
-    payment_id: str
-    share_id: str
-    user_id: str
-    amount: Decimal  # negative only for reversal entries
-    payment_date: date
-    payment_status: str
-    payment_method: str
-    notes: str
-    created_at: str
-    reverses_payment_id: str = ""
-
-    @classmethod
-    def from_row(cls, r: dict) -> "Payment":
-        reverses = str(r.get("reverses_payment_id") or "").strip()
-        return cls(
-            payment_id=clean_text(r.get("payment_id"), "payment_id", max_len=64),
-            share_id=clean_text(r.get("share_id"), "share_id", max_len=64),
-            user_id=clean_text(r.get("user_id"), "user_id", max_len=64),
-            amount=parse_money(r.get("amount"), "amount", allow_negative=bool(reverses)),
-            payment_date=parse_date(r.get("payment_date"), "payment_date"),
-            payment_status=choice(r.get("payment_status"), PAYMENT_STATUSES, "payment_status"),
-            payment_method=clean_text(r.get("payment_method"), "payment_method", max_len=40, required=False),
-            notes=clean_text(r.get("notes"), "notes", max_len=300, required=False),
-            created_at=str(r.get("created_at") or ""),
-            reverses_payment_id=reverses,
-        )
-
-    def to_row(self) -> dict:
-        return {"payment_id": self.payment_id, "share_id": self.share_id, "user_id": self.user_id,
-                "amount": str(self.amount), "payment_date": self.payment_date.isoformat(),
-                "payment_status": self.payment_status, "payment_method": self.payment_method,
-                "notes": self.notes, "created_at": self.created_at,
-                "reverses_payment_id": self.reverses_payment_id}
 
 
 @dataclass(frozen=True)
@@ -253,7 +219,6 @@ class Snapshot:
     lines: list[MobileLine] = field(default_factory=list)
     bills: list[Bill] = field(default_factory=list)
     shares: list[Share] = field(default_factory=list)
-    payments: list[Payment] = field(default_factory=list)
     settings: AppSettings = field(default_factory=AppSettings)
     warnings: list[str] = field(default_factory=list)
 
@@ -268,9 +233,6 @@ class Snapshot:
 
     def share(self, share_id: str) -> Share | None:
         return next((s for s in self.shares if s.share_id == share_id), None)
-
-    def payment(self, payment_id: str) -> Payment | None:
-        return next((p for p in self.payments if p.payment_id == payment_id), None)
 
     def bill_line_ids(self, bill_id: str) -> list[str]:
         bill = self.bill(bill_id)

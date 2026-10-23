@@ -5,7 +5,7 @@ from __future__ import annotations
 from utils.calculations import LineSummary, ShareView, Status
 from utils.formatting import date_label, esc, format_money, mask_phone, month_label
 
-_GLYPH = {Status.PAID: "✓", Status.PARTIAL: "◐", Status.DUE: "○", Status.OVERDUE: "!"}
+_GLYPH = {Status.PAID: "✓", Status.DUE: "○", Status.OVERDUE: "!"}
 
 
 def status_pill(status: Status) -> str:
@@ -63,17 +63,13 @@ def payment_table(views: list[ShareView], currency: str, show_user: bool = True)
     return table(headers, rows, numeric={off + 3, off + 4, off + 5}, raw_cols={off + 7}, secondary={off + 1, off + 2})
 
 
-def payments_made_table(views: list[ShareView], payments, currency: str) -> str:
-    """One row per month and line: confirmed net amount paid, against the amount billed, and last payment date."""
+def payments_made_table(views: list[ShareView], currency: str) -> str:
+    """One row per month and line for shares marked paid: amount and the date it was marked paid."""
     rows = []
     for v in sorted(views, key=lambda x: (x.month, x.line.line_label if x.line else ""), reverse=True):
-        dates = [p.payment_date for p in payments
-                 if p.share_id == v.share.share_id and p.payment_status == "confirmed" and p.amount > 0]
         rows.append([month_label(v.month), v.line.line_label if v.line else "—", format_money(v.paid, currency),
-                     format_money(v.amount_due, currency), date_label(max(dates)) if dates else "—",
-                     status_pill(v.status)])
-    return table(["Month", "Line", "Paid", "Billed", "Last payment", "Status"], rows, numeric={2, 3},
-                 raw_cols={5}, secondary={1})
+                     date_label(v.share.paid_date), status_pill(v.status)])
+    return table(["Month", "Line", "Amount paid", "Paid on", "Status"], rows, numeric={2}, raw_cols={4}, secondary={1})
 
 
 def history_table(views: list[ShareView], currency: str, show_line: bool = True) -> str:

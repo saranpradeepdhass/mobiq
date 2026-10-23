@@ -1,5 +1,5 @@
 bill_id,billing_month,total_bill,bill_due_date,bill_status,created_at,updated_at,line_ids
-b_m3,2026-07,200.00,2026-07-20,closed,2026-10-23T03:40:07Z,2026-10-23T03:40:07Z,"l_admin,l_alex1,l_alex2,l_sam,l_jo"
-b_m2,2026-08,200.00,2026-08-20,closed,2026-10-23T03:40:07Z,2026-10-23T03:40:07Z,"l_admin,l_alex1,l_alex2,l_sam,l_jo"
-b_m1,2026-09,210.00,2026-09-20,published,2026-10-23T03:40:07Z,2026-10-23T03:40:07Z,"l_admin,l_alex1,l_alex2,l_sam,l_jo"
-b_m0,2026-10,215.00,2026-10-20,published,2026-10-23T03:40:07Z,2026-10-23T03:40:07Z,"l_admin,l_alex1,l_alex2,l_sam,l_jo"
+b_m3,2026-07,200.00,2026-07-20,closed,2026-10-23T14:58:28Z,2026-10-23T14:58:28Z,"l_admin,l_alex1,l_alex2,l_sam,l_jo"
+b_m2,2026-08,200.00,2026-08-20,closed,2026-10-23T14:58:28Z,2026-10-23T14:58:28Z,"l_admin,l_alex1,l_alex2,l_sam,l_jo"
+b_m1,2026-09,210.00,2026-09-20,published,2026-10-23T14:58:28Z,2026-10-23T14:58:28Z,"l_admin,l_alex1,l_alex2,l_sam,l_jo"
+b_m0,2026-10,215.00,2026-10-20,published,2026-10-23T14:58:28Z,2026-10-23T14:58:28Z,"l_admin,l_alex1,l_alex2,l_sam,l_jo"

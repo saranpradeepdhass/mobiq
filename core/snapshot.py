@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from core.models import (
-    AppSettings, Bill, MobileLine, Payment, Share, Snapshot, User,
+    AppSettings, Bill, MobileLine, Share, Snapshot, User,
 )
 from utils.validators import ValidationError
 
@@ -31,7 +31,6 @@ def load_snapshot(repo, *, fresh: bool = False) -> Snapshot:
     snap.lines = _parse(repo.list("MobileLines", fresh=fresh), MobileLine.from_row, "MobileLines", w, "line_id")
     snap.bills = _parse(repo.list("Bills", fresh=fresh), Bill.from_row, "Bills", w, "bill_id")
     snap.shares = _parse(repo.list("BillShares", fresh=fresh), Share.from_row, "BillShares", w, "share_id")
-    snap.payments = _parse(repo.list("Payments", fresh=fresh), Payment.from_row, "Payments", w, "payment_id")
     snap.settings, sw = AppSettings.from_rows(repo.list("Settings", fresh=fresh))
     w.extend(sw)
 
@@ -49,8 +48,5 @@ def load_snapshot(repo, *, fresh: bool = False) -> Snapshot:
             pairs.add((s.bill_id, s.line_id))
             valid_shares.append(s)
     snap.shares = valid_shares
-    share_ids = {s.share_id for s in snap.shares}
-    snap.payments = [p for p in snap.payments if p.share_id in share_ids or
-                     w.append(f"Payment {p.payment_id}: references a missing share; ignored")]
     snap.warnings = w
     return snap

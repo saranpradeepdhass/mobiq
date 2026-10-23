@@ -8,7 +8,7 @@ from services import bill_service, reminder_service
 from services.common import GUEST, AuthorizationError, BusinessRuleError
 from services.mailer import DeliveryError, OutboxMailer
 from services.repository import NotFoundError
-from tests.conftest import NOW, add_payment
+from services import payment_service
 
 
 def published(ctx, admin):
@@ -23,13 +23,12 @@ def published(ctx, admin):
 
 def test_reminder_email_has_due_details_and_masks_number(world, ctx, admin):
     shares = published(ctx, admin)
-    add_payment(ctx.repo, shares["l_sam"], "15.00")
     mailer = OutboxMailer()
     to = reminder_service.send_payment_reminder(ctx, admin, shares["l_sam"], mailer)
     assert to == "sam@example.com" and len(mailer.sent) == 1
     _, subject, body = mailer.sent[0]
-    assert "$25.00" in subject and "Oct 20, 2026" in subject
-    for expected in ("Sam phone", "•••• 0004", "$40.00", "$15.00", "$25.00", "Oct 2026", "Overdue"):
+    assert "$40.00" in subject and "Oct 20, 2026" in subject
+    for expected in ("Sam phone", "•••• 0004", "$40.00", "Oct 2026", "Overdue"):
         assert expected in body
     assert "5550100004" not in body
     assert "reminder.send" in [r["action"] for r in ctx.repo.list("AuditLog")]
@@ -53,7 +52,7 @@ def test_no_mailer_paid_share_draft_and_unknown(world, ctx, admin):
     shares = published(ctx, admin)
     with pytest.raises(BusinessRuleError, match="not configured"):
         reminder_service.send_payment_reminder(ctx, admin, shares["l_sam"], None)
-    add_payment(ctx.repo, shares["l_sam"], "40.00")
+    payment_service.set_share_paid(ctx, admin, shares["l_sam"], True)
     mailer = OutboxMailer()
     with pytest.raises(BusinessRuleError, match="already paid"):
         reminder_service.send_payment_reminder(ctx, admin, shares["l_sam"], mailer)

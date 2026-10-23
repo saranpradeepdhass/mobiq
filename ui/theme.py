@@ -25,7 +25,6 @@ CSS = f"""
   --mq-text-2: {TOKENS['text_secondary']};
   --mq-meta: {TOKENS['text_meta']};
   --mq-green: #3FB950;   /* Paid */
-  --mq-yellow: #D29922;  /* Partial / unpaid */
   --mq-red: #F85149;     /* Due / Overdue */
   --mq-radius: 14px;
 }}
@@ -78,7 +77,6 @@ section[data-testid="stSidebar"] a[data-testid="stSidebarNavLink"][aria-current=
 .mq-pill {{ display:inline-flex; align-items:center; gap:.35rem; padding:.15rem .65rem; border-radius:999px;
   font-size:.78rem; font-weight:600; border: 1px solid var(--mq-border); color: var(--mq-text-2); white-space: nowrap; }}
 .mq-pill.paid {{ color: var(--mq-green); border-color: var(--mq-green); }}
-.mq-pill.partial {{ color: var(--mq-yellow); border-color: var(--mq-yellow); border-style: dashed; }}
 .mq-pill.due {{ color: var(--mq-red); border-color: var(--mq-red); }}
 .mq-pill.overdue {{ color: var(--mq-red); border: 1px solid var(--mq-red); font-weight: 700; }}
 

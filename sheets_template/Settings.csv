@@ -1,9 +1,9 @@
 key,value,updated_at
-app_name,Mobiq,2026-10-23T03:40:07Z
-currency,USD,2026-10-23T03:40:07Z
-timezone,America/New_York,2026-10-23T03:40:07Z
-current_billing_period,2026-10,2026-10-23T03:40:07Z
-default_due_day,20,2026-10-23T03:40:07Z
-guest_visibility,none,2026-10-23T03:40:07Z
-payment_instructions,SAMPLE: Send your share via Zelle to billing@example.com,2026-10-23T03:40:07Z
-reminders_enabled,FALSE,2026-10-23T03:40:07Z
+app_name,Mobiq,2026-10-23T14:58:28Z
+currency,USD,2026-10-23T14:58:28Z
+timezone,America/New_York,2026-10-23T14:58:28Z
+current_billing_period,2026-10,2026-10-23T14:58:28Z
+default_due_day,20,2026-10-23T14:58:28Z
+guest_visibility,none,2026-10-23T14:58:28Z
+payment_instructions,SAMPLE: Send your share via Zelle to billing@example.com,2026-10-23T14:58:28Z
+reminders_enabled,FALSE,2026-10-23T14:58:28Z
