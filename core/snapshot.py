@@ -27,11 +27,12 @@ def _parse(rows, factory, label, warnings, id_col):
 def load_snapshot(repo, *, fresh: bool = False) -> Snapshot:
     w: list[str] = []
     snap = Snapshot()
-    snap.users = _parse(repo.list("Users", fresh=fresh), User.from_row, "Users", w, "user_id")
-    snap.lines = _parse(repo.list("MobileLines", fresh=fresh), MobileLine.from_row, "MobileLines", w, "line_id")
-    snap.bills = _parse(repo.list("Bills", fresh=fresh), Bill.from_row, "Bills", w, "bill_id")
-    snap.shares = _parse(repo.list("BillShares", fresh=fresh), Share.from_row, "BillShares", w, "share_id")
-    snap.settings, sw = AppSettings.from_rows(repo.list("Settings", fresh=fresh))
+    data = repo.list_many(["Users", "MobileLines", "Bills", "BillShares", "Settings"], fresh=fresh)  # one API call
+    snap.users = _parse(data["Users"], User.from_row, "Users", w, "user_id")
+    snap.lines = _parse(data["MobileLines"], MobileLine.from_row, "MobileLines", w, "line_id")
+    snap.bills = _parse(data["Bills"], Bill.from_row, "Bills", w, "bill_id")
+    snap.shares = _parse(data["BillShares"], Share.from_row, "BillShares", w, "share_id")
+    snap.settings, sw = AppSettings.from_rows(data["Settings"])
     w.extend(sw)
 
     bill_ids = {b.bill_id for b in snap.bills}

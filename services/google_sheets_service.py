@@ -4,7 +4,9 @@ Notes
 - Reads use get_all_values() so IDs, phone numbers and money stay as text (no type coercion).
 - Writes use value_input_option="RAW" so values are never interpreted as formulas.
 - Reads are cached per worksheet for `ttl` seconds and invalidated after every write.
-- Updates re-read the worksheet fresh to locate the row and run the optimistic-concurrency check.
+- list_many() fetches every stale worksheet in ONE batch API call (the snapshot loader uses it).
+- Updates read the worksheet fresh once (rows keep their sheet row numbers) for the optimistic-concurrency
+  check, then write; appends reuse cached headers and do not need a read at all.
 - This module has NOT been exercised against a live spreadsheet in this repository's test suite;
   tests use InMemoryRepository. Follow the README smoke-test steps with your own credentials.
 """
@@ -31,7 +33,9 @@ class GoogleSheetsRepository(Repository):
         self._retries = retries
         self._sleep = sleep
         self._clock = clock
-        self._cache: dict[str, tuple[float, list[str], list[list[str]]]] = {}
+        # table -> (fetched_at, headers, rows, sheet row numbers of those rows)
+        self._cache: dict[str, tuple[float, list[str], list[list[str]], list[int]]] = {}
+        self._headers: dict[str, tuple[float, list[str]]] = {}  # survives invalidate(); short-lived
         self._ws: dict = {}
 
     # ---- construction -------------------------------------------------
@@ -78,20 +82,43 @@ class GoogleSheetsRepository(Repository):
                 raise SchemaError(f"Worksheet '{table}' is missing.") from None
         return self._ws[table]
 
-    def _read(self, table: str, fresh: bool):
-        hit = self._cache.get(table)
-        if hit and not fresh and self._clock() - hit[0] < self._ttl:
-            return hit[1], hit[2]
-        values = self._call(self._worksheet(table).get_all_values)
+    def _parse_values(self, table: str, values: list[list[str]]):
+        """Validate the header row and drop blank rows, remembering each row's sheet row number."""
         if not values:
             raise SchemaError(f"Worksheet '{table}' has no header row.")
         headers = [h.strip() for h in values[0]]
         missing = [h for h in TABLES[table][1] if h not in headers]
         if missing:
             raise SchemaError(f"Worksheet '{table}' is missing columns: {', '.join(missing)}")
-        rows = [r for r in values[1:] if any(c.strip() for c in r)]
-        self._cache[table] = (self._clock(), headers, rows)
-        return headers, rows
+        rows, numbers = [], []
+        for n, r in enumerate(values[1:], start=2):
+            if any(c.strip() for c in r):
+                rows.append(r)
+                numbers.append(n)
+        return headers, rows, numbers
+
+    def _store(self, table: str, values: list[list[str]]) -> None:
+        headers, rows, numbers = self._parse_values(table, values)
+        now = self._clock()
+        self._cache[table] = (now, headers, rows, numbers)
+        self._headers[table] = (now, headers)
+
+    def _is_fresh(self, table: str) -> bool:
+        hit = self._cache.get(table)
+        return bool(hit) and self._clock() - hit[0] < self._ttl
+
+    def _read(self, table: str, fresh: bool):
+        if fresh or not self._is_fresh(table):
+            self._store(table, self._call(self._worksheet(table).get_all_values))
+        _, headers, rows, numbers = self._cache[table]
+        return headers, rows, numbers
+
+    def _known_headers(self, table: str) -> list[str]:
+        """Headers for appends: cached for 5 minutes so an append does not cost a read."""
+        hit = self._headers.get(table)
+        if hit and self._clock() - hit[0] < 300:
+            return hit[1]
+        return self._read(table, fresh=True)[0]
 
     @staticmethod
     def _to_dicts(headers, rows):
@@ -99,16 +126,36 @@ class GoogleSheetsRepository(Repository):
 
     # ---- Repository API ----------------------------------------------
     def list(self, table, *, fresh=False):
-        headers, rows = self._read(table, fresh)
+        headers, rows, _ = self._read(table, fresh)
         return self._to_dicts(headers, rows)
+
+    def list_many(self, tables, *, fresh=False):
+        """Read several worksheets, fetching every stale one in a single batch request."""
+        stale = [t for t in tables if fresh or not self._is_fresh(t)]
+        if stale:
+            try:
+                response = self._call(self._ss.values_batch_get, [f"'{t}'" for t in stale])
+            except StorageError as exc:
+                if "HTTP 400" in str(exc):  # Google rejects a range whose worksheet does not exist
+                    raise SchemaError("A required worksheet is missing or misnamed. Expected tabs: "
+                                      + ", ".join(stale)) from None
+                raise
+            ranges = response.get("valueRanges", [])
+            if len(ranges) != len(stale):
+                raise StorageError("Google Sheets returned an unexpected response.")
+            for table, value_range in zip(stale, ranges):
+                self._store(table, value_range.get("values", []))
+        return {t: self._to_dicts(self._cache[t][1], self._cache[t][2]) for t in tables}
 
     def append(self, table, row):
         id_col = TABLES[table][0]
         with self.lock():
-            headers, rows = self._read(table, fresh=False)
-            idx = headers.index(id_col)
-            if any(len(r) > idx and r[idx] == row.get(id_col) for r in rows):
-                raise DuplicateError(f"{table}: duplicate {id_col} {row.get(id_col)!r}")
+            headers = self._known_headers(table)
+            hit = self._cache.get(table)  # duplicate check only against rows already in memory (ids are random)
+            if hit and id_col in headers:
+                idx = headers.index(id_col)
+                if any(len(r) > idx and r[idx] == row.get(id_col) for r in hit[2]):
+                    raise DuplicateError(f"{table}: duplicate {id_col} {row.get(id_col)!r}")
             values = [str(row.get(h, "")) for h in headers]
             self._call(self._worksheet(table).append_row, values,
                        value_input_option="RAW", table_range="A1")
@@ -119,9 +166,9 @@ class GoogleSheetsRepository(Repository):
 
         id_col = TABLES[table][0]
         with self.lock():
-            headers, rows = self._read(table, fresh=True)
+            headers, rows, numbers = self._read(table, fresh=True)  # the only read: rows carry their sheet row numbers
             idx = headers.index(id_col)
-            for offset, r in enumerate(rows):
+            for position, r in enumerate(rows):
                 if len(r) > idx and r[idx] == record_id:
                     break
             else:
@@ -130,20 +177,12 @@ class GoogleSheetsRepository(Repository):
             if expected_updated_at is not None and current.get("updated_at", "") != expected_updated_at:
                 raise ConflictError(f"{table} {record_id} was modified by someone else.")
             current.update({k: str(v) for k, v in changes.items() if k in headers and k != id_col})
-            # Row number: rows were filtered of blanks, so locate against the raw sheet instead.
-            sheet_row = self._sheet_row(table, idx, record_id)
+            sheet_row = numbers[position]
             end = rowcol_to_a1(sheet_row, len(headers))
             self._call(self._worksheet(table).update, range_name=f"A{sheet_row}:{end}",
                        values=[[current[h] for h in headers]], value_input_option="RAW")
             self.invalidate()
             return current
-
-    def _sheet_row(self, table: str, id_idx: int, record_id: str) -> int:
-        col = self._call(self._worksheet(table).col_values, id_idx + 1)
-        for n, v in enumerate(col, start=1):
-            if n > 1 and v == record_id:
-                return n
-        raise NotFoundError(f"{table}: {record_id} not found")
 
     def invalidate(self) -> None:
         self._cache.clear()

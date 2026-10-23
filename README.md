@@ -52,7 +52,7 @@ tests/  scripts/init_sheet.py  sheets_template/ (CSV headers + SAMPLE rows)
 Data access is behind `Repository` (`list / append / update / get / lock / invalidate`). To migrate to a database, implement that interface and return it from `services/runtime.py`; services and UI do not change.
 
 ### Concurrency and caching
-Reads are cached per worksheet (`cache_ttl_seconds`, default 30) and invalidated on every write. Writes re-read fresh, check `updated_at` (optimistic concurrency → "someone else changed this record"), and are serialised per process by a lock. Google Sheets has no transactions: two *separate server processes* writing the same row within milliseconds can still race. Fine for a small household; use a database beyond that.
+Reads are cached per worksheet (`cache_ttl_seconds`, default 30) and invalidated on every write. All stale worksheets are fetched together in **one** batch API call (`Repository.list_many`), the Admin Console and the signed-in-user check use the cache, and an update costs one read plus the write. Only writes force fresh reads (including a fresh admin-role check), so edits made directly in the sheet can take up to the TTL to appear, and a demoted user's open page can stay visible for up to the TTL, though their writes are refused immediately. Writes re-read fresh, check `updated_at` (optimistic concurrency → "someone else changed this record"), and are serialised per process by a lock. Google Sheets has no transactions: two *separate server processes* writing the same row within milliseconds can still race. Fine for a small household; use a database beyond that.
 
 ## Security model
 

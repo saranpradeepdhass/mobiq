@@ -31,6 +31,10 @@ CSS = f"""
 html, body, [class*="css"], .stApp {{ font-family: {_FONT}; font-weight: 500; color: var(--mq-text); }}
 .stApp {{ background: var(--mq-canvas); }}
 header[data-testid="stHeader"] {{ background: transparent; }}
+/* Hide Streamlit's own chrome (menu, deploy button, run indicator, footer). The header and toolbar themselves must
+   stay: the sidebar expand button lives inside them, and on phones it is the only way to open the navigation. */
+[data-testid="stMainMenu"], [data-testid="stAppDeployButton"], [data-testid="stStatusWidget"],
+[data-testid="stDecoration"], #MainMenu, footer {{ display: none !important; }}
 .block-container {{ padding: 1.5rem 2rem 4rem; max-width: 1280px; }}
 h1, h2, h3, h4 {{ font-family: {_FONT}; color: var(--mq-text); letter-spacing: -0.01em; }}
 h1 {{ font-weight: 700; }} h2, h3 {{ font-weight: 600; }}
@@ -115,6 +119,14 @@ button[role="tab"][aria-selected="true"] {{ color: var(--mq-text); border-bottom
 .stTabs [data-baseweb="tab-highlight"] {{ background-color: var(--mq-accent); }}
 div[data-testid="stColumn"] .stButton > button {{ min-height: 2.5rem; }}
 hr {{ border-color: var(--mq-border); }}
+
+/* Shares & payments (st.columns rows): stay one row and scroll sideways instead of stacking 9 fields vertically */
+.st-key-mq_shares {{ overflow-x: auto; background: var(--mq-surface); border: 1px solid var(--mq-border);
+  border-radius: var(--mq-radius); padding: .5rem 1rem; -webkit-overflow-scrolling: touch; }}
+.st-key-mq_shares [data-testid="stHorizontalBlock"] {{ flex-wrap: nowrap !important; min-width: 900px;
+  border-bottom: 1px solid var(--mq-border); padding: .25rem 0; }}
+.st-key-mq_shares [data-testid="stColumn"] {{ min-width: 0 !important; }}
+.st-key-mq_shares .mq-label {{ white-space: nowrap; font-size: .72rem; }}
 
 /* responsive */
 @media (max-width: 1024px) {{ .mq-grid.cols-4 {{ grid-template-columns: repeat(2, minmax(0,1fr)); }}

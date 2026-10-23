@@ -254,3 +254,14 @@ def test_edit_share_section_hidden_until_button_clicked():
     assert any(t.label == "Amount due" for t in at.text_input)  # opened by the button
     next(b for b in at.button if b.key == "mq_edit_share_btn").click().run()
     assert not any(t.label == "Amount due" for t in at.text_input)  # and closes again
+
+
+def test_streamlit_chrome_hidden_without_hiding_the_sidebar_toggle():
+    assert 'stMainMenu' in CSS and 'stAppDeployButton' in CSS and "display: none" in CSS
+    # The sidebar expand button lives inside <header>/stToolbar: hiding those makes phone navigation unreachable.
+    assert not re.search(r"(^|\n)\s*header\s*\{[^}]*visibility\s*:\s*hidden", CSS)
+    assert not re.search(r'stToolbar"\]\s*\{[^}]*(visibility\s*:\s*hidden|display\s*:\s*none)', CSS)
+
+
+def test_shares_table_scrolls_sideways_on_phones():
+    assert ".st-key-mq_shares" in CSS and "flex-wrap: nowrap" in CSS and "overflow-x: auto" in CSS

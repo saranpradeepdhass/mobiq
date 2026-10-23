@@ -43,6 +43,10 @@ class Repository(ABC):
     @abstractmethod
     def list(self, table: str, *, fresh: bool = False) -> list[dict]: ...
 
+    def list_many(self, tables: list[str], *, fresh: bool = False) -> dict[str, list[dict]]:
+        """Read several tables. Backends may override this to fetch them in one round trip."""
+        return {t: self.list(t, fresh=fresh) for t in tables}
+
     @abstractmethod
     def append(self, table: str, row: dict) -> None: ...
 

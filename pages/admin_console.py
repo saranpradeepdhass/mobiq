@@ -44,14 +44,14 @@ def _act(fn, success: str) -> None:
 def render(rt, principal: Principal) -> None:
     ctx = rt.ctx
     try:
-        require_admin(ctx, principal)  # defence in depth: the page itself is also guarded
+        require_admin(ctx, principal, fresh=False)  # page guard (cached); every write re-checks with a fresh read
     except AuthorizationError:
         ui.show("error", "Administrator access is required.")
         return
     if flash := st.session_state.pop("mq_flash", None):
         ui.show("success", flash)
     try:
-        snap = load_snapshot(ctx.repo, fresh=True)
+        snap = load_snapshot(ctx.repo)  # cached; any write clears the cache, direct sheet edits show within the TTL
     except StorageError as exc:
         ui.show("error", f"Could not load data: {exc}")
         return
@@ -215,26 +215,27 @@ def _payments(ctx, actor, snap, mailer):
     if flash := st.session_state.pop("mq_flash_error", None):
         ui.show("error", flash)
     if views:
-        widths = [2, 2, 1.4, 1.4, 1.4, 1.7, 1.6, 1.0, 1.2]
-        head = st.columns(widths, vertical_alignment="center")
-        for col, label in zip(head, ["User", "Line", "Amount due", "Amount paid", "Outstanding", "Due date", "Status", "Paid", "Notify"]):
-            col.markdown(f"<span class='mq-label'>{label}</span>", unsafe_allow_html=True)
-        for v in views:
-            sid = v.share.share_id
-            row = st.columns(widths, vertical_alignment="center")
-            row[0].write(v.user.name if v.user else "—")
-            row[1].write(v.line.line_label if v.line else "—")
-            row[2].write(format_money(v.amount_due, cur))
-            row[3].write(format_money(v.paid, cur))
-            row[4].write(format_money(v.outstanding, cur))
-            row[5].write(date_label(v.due_date))
-            row[6].markdown(ui.status_pill(v.status), unsafe_allow_html=True)
-            key = f"paid_{sid}_{v.paid}"  # key changes with the stored state so the box always reflects the data
-            st.session_state.setdefault(key, v.outstanding == 0)  # seeded here so callbacks may also set it
-            row[7].checkbox("Paid", key=key, label_visibility="collapsed",
-                            disabled=bill.bill_status == "draft", on_change=_paid_changed, args=(ctx, actor, sid, key))
-            row[8].button("Notify", key=f"notify_{sid}", disabled=bill.bill_status == "draft" or v.outstanding == 0,
-                          on_click=_notify, args=(ctx, actor, sid, mailer), help="Email a payment reminder with the due details")
+        with st.container(key="mq_shares"):  # CSS keeps these columns in one scrollable row on phones
+            widths = [2, 2, 1.5, 1.5, 1.9, 1.8, 1.6, 0.9, 1.3]
+            head = st.columns(widths, vertical_alignment="center")
+            for col, label in zip(head, ["User", "Line", "Amount due", "Amount paid", "Outstanding", "Due date", "Status", "Paid", "Notify"]):
+                col.markdown(f"<span class='mq-label'>{label}</span>", unsafe_allow_html=True)
+            for v in views:
+                sid = v.share.share_id
+                row = st.columns(widths, vertical_alignment="center")
+                row[0].write(v.user.name if v.user else "—")
+                row[1].write(v.line.line_label if v.line else "—")
+                row[2].write(format_money(v.amount_due, cur))
+                row[3].write(format_money(v.paid, cur))
+                row[4].write(format_money(v.outstanding, cur))
+                row[5].write(date_label(v.due_date))
+                row[6].markdown(ui.status_pill(v.status), unsafe_allow_html=True)
+                key = f"paid_{sid}_{v.paid}"  # key changes with the stored state so the box always reflects the data
+                st.session_state.setdefault(key, v.outstanding == 0)  # seeded here so callbacks may also set it
+                row[7].checkbox("Paid", key=key, label_visibility="collapsed",
+                                disabled=bill.bill_status == "draft", on_change=_paid_changed, args=(ctx, actor, sid, key))
+                row[8].button("Notify", key=f"notify_{sid}", disabled=bill.bill_status == "draft" or v.outstanding == 0,
+                              on_click=_notify, args=(ctx, actor, sid, mailer), help="Email a payment reminder with the due details")
         if pending := st.session_state.get("mq_confirm_unpaid"):  # stays set until Yes or Cancel is pressed
             target = next((v for v in views if v.share.share_id == pending), None)
             if target is not None:

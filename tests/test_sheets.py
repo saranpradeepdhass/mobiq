@@ -40,6 +40,7 @@ class FakeWorksheet:
         self.values.append(list(values))
 
     def col_values(self, n):
+        self.col_reads = getattr(self, "col_reads", 0) + 1
         return [r[n - 1] if len(r) >= n else "" for r in self.values]
 
     def update(self, range_name, values, value_input_option=None):
@@ -51,6 +52,19 @@ class FakeWorksheet:
 class FakeSpreadsheet:
     def __init__(self):
         self.sheets = {t: FakeWorksheet(h) for t, (_, h) in TABLES.items()}
+        self.batch_calls = []
+
+    def values_batch_get(self, ranges):
+        self.batch_calls.append(list(ranges))
+        out = []
+        for rng in ranges:
+            name = rng.strip("'")
+            if name not in self.sheets:
+                raise gspread.exceptions.APIError(FakeResponse(400))
+            ws = self.sheets[name]
+            ws._maybe_fail()
+            out.append({"range": rng, "values": [list(r) for r in ws.values]})
+        return {"valueRanges": out}
 
     def worksheet(self, name):
         return self.sheets[name]
@@ -99,6 +113,7 @@ def test_cache_expires_after_ttl(repo, ss):
 
 def test_duplicate_id_rejected(repo):
     repo.append("Users", user("u1"))
+    repo.list("Users")  # appends check duplicates against rows already in memory; they cost no extra read
     with pytest.raises(DuplicateError):
         repo.append("Users", user("u1"))
 
@@ -152,3 +167,64 @@ def test_missing_columns_raise_schema_error(ss):
 #     assert r.list("Payments") == []
 
 
+
+
+def test_list_many_fetches_all_stale_tabs_in_one_call(repo, ss):
+    repo.append("Users", user("u1"))
+    data = repo.list_many(["Users", "MobileLines", "Bills"])
+    assert len(ss.batch_calls) == 1 and ss.batch_calls[0] == ["'Users'", "'MobileLines'", "'Bills'"]
+    assert data["Users"][0]["user_id"] == "u1" and data["Bills"] == []
+    repo.list_many(["Users", "MobileLines", "Bills"])  # all cached now
+    assert len(ss.batch_calls) == 1
+
+
+def test_list_many_only_refetches_expired_tabs(repo, ss):
+    repo.list_many(["Users", "Bills"])
+    repo.now["t"] = 20
+    repo.list("MobileLines")                      # cached later than the others
+    repo.now["t"] = 31                            # Users/Bills expired, MobileLines (cached at 20) still fresh
+    repo.list_many(["Users", "MobileLines", "Bills"])
+    assert ss.batch_calls[-1] == ["'Users'", "'Bills'"]
+
+
+def test_list_many_fresh_bypasses_cache_and_write_invalidates(repo, ss):
+    repo.list_many(["Users"])
+    repo.list_many(["Users"], fresh=True)
+    assert len(ss.batch_calls) == 2
+    repo.append("Users", user("u2"))
+    assert [r["user_id"] for r in repo.list_many(["Users"])["Users"]] == ["u2"]  # cache cleared by the write
+
+
+def test_list_many_missing_worksheet_gives_schema_error(repo, ss):
+    del ss.sheets["Settings"]
+    with pytest.raises(SchemaError, match="missing or misnamed"):
+        repo.list_many(["Users", "Settings"])
+
+
+def test_list_many_validates_headers_and_retries_transient_errors(repo, ss):
+    ss.sheets["Users"].values = [["user_id", "name"]]
+    with pytest.raises(SchemaError, match="email"):
+        repo.list_many(["Users"])
+    ss.sheets["Users"].values = [list(TABLES["Users"][1])]
+    ss.sheets["Users"].fail_times = 2
+    repo.invalidate()
+    assert repo.list_many(["Users"])["Users"] == []
+
+
+def test_update_uses_a_single_read_and_no_column_lookup(repo, ss):
+    repo.append("Users", user("u1"))
+    repo.append("Users", user("u2"))
+    ss.sheets["Users"].values.insert(2, [""] * 6)    # blank row between them
+    ss.sheets["Users"].reads = 0
+    repo.update("Users", "u2", {"name": "Changed"})
+    assert ss.sheets["Users"].reads == 1 and getattr(ss.sheets["Users"], "col_reads", 0) == 0
+    assert [r[1] for r in ss.sheets["Users"].values[1:]] == ["u1", "", "Changed"]
+
+
+def test_append_costs_no_read_when_headers_known(repo, ss):
+    repo.list("Users")                                # learns the headers
+    ss.sheets["Users"].reads = 0
+    repo.append("Users", user("u3"))
+    repo.append("Users", user("u4"))                  # cache was cleared by the first write; headers still known
+    assert ss.sheets["Users"].reads == 0
+    assert [r[0] for r in ss.sheets["Users"].values[1:]] == ["u3", "u4"]

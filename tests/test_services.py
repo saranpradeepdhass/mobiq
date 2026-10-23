@@ -207,3 +207,15 @@ def test_invalid_setting_falls_back_and_update_validates(world, ctx, admin):
         directory_service.update_setting(ctx, admin, "timezone", "Mars/Base")
     directory_service.update_setting(ctx, admin, "guest_visibility", "aggregate")
     assert load_snapshot(ctx.repo).settings.guest_visibility == "aggregate"
+
+
+def test_page_guard_may_use_cache_but_writes_always_read_fresh(world, ctx, admin):
+    from services.common import require_admin
+
+    seen = []
+    original = world.get
+    world.get = lambda table, rid, *, fresh=False: (seen.append(fresh), original(table, rid, fresh=fresh))[1]
+    require_admin(ctx, admin, fresh=False)           # read-only page guard: cached read allowed
+    bill_service.create_bill(ctx, admin, billing_month="2026-10", total_bill="1", due_date="2026-10-20",
+                             line_ids=["l_sam"])     # a write: must re-check the role with a fresh read
+    assert seen[0] is False and seen[1:] == [True]

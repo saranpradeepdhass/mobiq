@@ -184,11 +184,12 @@ class AuthService:
         return Principal(user.user_id, user.email, user.name, user.role)
 
 
-def resolve_principal(ctx: ServiceContext, user_id: str | None) -> Principal | None:
-    """Rebuild a principal from storage so role/active changes take effect immediately."""
+def resolve_principal(ctx: ServiceContext, user_id: str | None, *, fresh: bool = False) -> Principal | None:
+    """Rebuild a principal from storage. Uses the short-lived cache by default (role/active changes show up
+    within the cache TTL); sensitive writes re-check with require_admin(fresh=True)."""
     if not user_id:
         return None
-    row = ctx.repo.get("Users", user_id, fresh=True)
+    row = ctx.repo.get("Users", user_id, fresh=fresh)
     if not row:
         return None
     try:

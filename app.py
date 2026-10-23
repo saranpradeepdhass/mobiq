@@ -5,7 +5,9 @@ import time
 
 import streamlit as st
 
-st.set_page_config(page_title="Mobiq", page_icon="◼", layout="wide", initial_sidebar_state="auto")
+st.set_page_config(page_title="Mobiq", page_icon="📊", layout="wide", initial_sidebar_state="auto")
+
+# Streamlit's own menu/deploy button/footer are hidden in ui/theme.py (the sidebar toggle is kept on purpose).
 
 from core.snapshot import load_snapshot  # noqa: E402
 from pages import admin_console, dashboard  # noqa: E402

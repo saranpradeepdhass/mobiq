@@ -57,11 +57,13 @@ class ServiceContext:
         return iso(self.now())
 
 
-def require_admin(ctx: ServiceContext, actor: Principal) -> Principal:
-    """Server-side authorization. Re-reads the user from storage; the session's role is never trusted."""
+def require_admin(ctx: ServiceContext, actor: Principal, *, fresh: bool = True) -> Principal:
+    """Server-side authorization. Re-reads the user from storage; the session's role is never trusted.
+    Writes always use fresh=True (a just-demoted admin is refused immediately); the read-only page guard may
+    pass fresh=False to use the short-lived cache."""
     if actor is None or actor.is_guest or not actor.user_id:
         raise AuthorizationError("Administrator access is required.")
-    row = ctx.repo.get("Users", actor.user_id, fresh=True)
+    row = ctx.repo.get("Users", actor.user_id, fresh=fresh)
     if not row or row.get("role", "").strip().lower() != "admin" \
             or row.get("active", "").strip().upper() != "TRUE":
         raise AuthorizationError("Administrator access is required.")
