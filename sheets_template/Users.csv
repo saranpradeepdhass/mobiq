@@ -1,0 +1,5 @@
+user_id,name,email,role,active,created_at
+u_admin,SAMPLE Admin,admin@example.com,admin,TRUE,2026-10-23T03:40:07Z
+u_alex,SAMPLE Alex Rivera,alex@example.com,user,TRUE,2026-10-23T03:40:07Z
+u_sam,SAMPLE Sam Chen,sam@example.com,user,TRUE,2026-10-23T03:40:07Z
+u_jo,SAMPLE Jo Patel,jo@example.com,user,TRUE,2026-10-23T03:40:07Z

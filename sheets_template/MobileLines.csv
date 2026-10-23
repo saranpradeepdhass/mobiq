@@ -1,0 +1,6 @@
+line_id,user_id,line_label,mobile_number,account_reference,active,created_at,updated_at
+l_admin,u_admin,Admin phone,5550100001,ACCT-SAMPLE-1,TRUE,2026-10-23T03:40:07Z,2026-10-23T03:40:07Z
+l_alex1,u_alex,Alex personal,5550100002,ACCT-SAMPLE-1,TRUE,2026-10-23T03:40:07Z,2026-10-23T03:40:07Z
+l_alex2,u_alex,Alex work,5550100003,ACCT-SAMPLE-1,TRUE,2026-10-23T03:40:07Z,2026-10-23T03:40:07Z
+l_sam,u_sam,Sam phone,5550100004,ACCT-SAMPLE-1,TRUE,2026-10-23T03:40:07Z,2026-10-23T03:40:07Z
+l_jo,u_jo,Jo phone,5550100005,ACCT-SAMPLE-1,TRUE,2026-10-23T03:40:07Z,2026-10-23T03:40:07Z
