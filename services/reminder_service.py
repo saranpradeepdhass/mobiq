@@ -103,7 +103,7 @@ def _recently_notified(ctx: ServiceContext, share_id: str) -> bool:
 def compose_reminder(app_name: str, view: ShareView, currency: str, instructions: str,
                      other_unpaid) -> tuple[str, str]:
     """(subject, body). The subject carries only amounts and dates, never free text from the sheet."""
-    subject = f"Payment reminder: {format_money(view.outstanding, currency)} due {date_label(view.due_date)}"
+    subject = f"ATT Mobile Bill Payment reminder: {format_money(view.outstanding, currency)} due"
     line = view.line.line_label if view.line else "your line"
     number = f" ({mask_phone(view.line.mobile_number)})" if view.line else ""
     name = view.user.name if view.user else "there"
@@ -116,7 +116,7 @@ def compose_reminder(app_name: str, view: ShareView, currency: str, instructions
         ("Status", view.status.value),
     ]
     width = max(len(k) for k, _ in rows)
-    lines = [f"Hi {name},", "", f"This is a reminder from {app_name} about an unpaid mobile bill share:", ""]
+    lines = [f"Hi {name},", "", f"This is a reminder about an unpaid ATT mobile monthly bill share:", ""]
     lines += [f"  {k.ljust(width)} : {v}" for k, v in rows]
     if other_unpaid:
         lines += ["", "Other unpaid bills on your lines:"]
@@ -124,7 +124,7 @@ def compose_reminder(app_name: str, view: ShareView, currency: str, instructions
                   for v in other_unpaid]
     if instructions:
         lines += ["", "How to pay:", f"  {instructions}"]
-    lines += ["", "If you have already paid, please ignore this message."]
+    lines += ["", "Contact Muthukumar Ganesan for any details. If you have already paid, please ignore this message."]
     return subject, "\n".join(lines)
 
 
