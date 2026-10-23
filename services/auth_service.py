@@ -1,30 +1,54 @@
-"""Email sign-in: either emailed one-time codes (auth.require_code = true) or email-only (default).
+"""Email sign-in with self-registration and an admin PIN.
 
-Flow: request_code(email) -> emailed 6-digit code -> verify_code(email, code) -> Principal.
-- Only emails that already exist in the Users sheet as active are sent a code (invitation model);
-  the response is identical for unknown emails so accounts cannot be enumerated.
-- Codes are random, single-use, expire (default 10 min), stored only as HMAC hashes, and are
-  invalidated after too many wrong attempts. Sends are rate limited per email and globally.
-- Codes are never logged. State lives in process memory (see README for hosting limitations).
+Modes (auth.require_code):
+- false (default): email-only. Existing users sign in with their email. NO proof of mailbox ownership.
+- true: an emailed 6-digit one-time code is required.
+
+Everyone: unknown email -> the app asks for a mobile number and creates a user account plus a line owned by
+that user (auth.allow_registration). Admin accounts additionally need the 4-digit PIN from auth.admin_pin;
+the PIN is enforced here, not just in the UI, and is locked after repeated wrong attempts.
+
+Codes are random, single-use, expire, are stored only as HMAC hashes and are never logged. Attempts and
+registrations are rate limited. State lives in process memory (see README for hosting limitations).
 """
 from __future__ import annotations
 
 import hashlib
 import hmac
+import re
 import secrets
 import threading
 import time
 from dataclasses import dataclass
 from typing import Callable, Protocol
 
-from core.models import User, fmt_bool, new_id
-from services.common import AuthenticationError, Principal, ServiceContext
+from core.models import MobileLine, User, fmt_bool, new_id
+from core.snapshot import load_snapshot
+from services.common import AuthenticationError, Principal, ServiceContext, audit
 from services.mailer import DeliveryError, Mailer  # noqa: F401  (DeliveryError re-exported)
-from utils.validators import ValidationError, normalize_email
+from services.repository import DuplicateError
+from utils.validators import ValidationError, normalize_email, normalize_phone
 
 GENERIC_SENT = "If that email is registered, a sign-in code has been sent."
 GENERIC_FAIL = "That code is invalid or has expired."
 NO_ACCOUNT = "We couldn't sign you in with that email. Ask an administrator to invite you."
+INACTIVE = "This account is disabled. Ask an administrator for help."
+PIN_NOT_CONFIGURED = "Admin sign-in is disabled because no admin PIN is configured. Set auth.admin_pin in the secrets."
+PIN_WRONG = "Incorrect PIN."
+
+_WEAK_PINS = {"0000", "1111", "2222", "3333", "4444", "5555", "6666", "7777", "8888", "9999",
+              "1234", "4321", "0123", "3210", "1212", "2580", "1004", "2000"}
+
+
+def validate_admin_pin(pin: str | None) -> str | None:
+    """Return the PIN if it is exactly four digits and not trivially guessable; raise ValueError otherwise."""
+    if pin is None or pin == "":
+        return None
+    if not re.fullmatch(r"\d{4}", pin):
+        raise ValueError("auth.admin_pin must be exactly 4 digits (quote it in TOML, e.g. admin_pin = \"4821\").")
+    if pin in _WEAK_PINS:
+        raise ValueError("auth.admin_pin is too easy to guess (avoid repeated or sequential digits).")
+    return pin
 
 
 class RateLimited(Exception):
@@ -64,24 +88,40 @@ class _Pending:
     attempts: int = 0
 
 
+def _display_name(email: str) -> str:
+    local = re.sub(r"[._\-+]+", " ", email.split("@", 1)[0]).strip()
+    return (local.title() or "New user")[:80]
+
+
 class AuthService:
     def __init__(self, ctx: ServiceContext, sender: EmailSender, secret: str, *,
                  ttl_seconds: int = 600, max_attempts: int = 5, max_sends: int = 3,
                  send_window: int = 900, cooldown: int = 30, global_per_minute: int = 30,
-                 bootstrap_admin_email: str = "", monotonic: Callable[[], float] = time.monotonic):
+                 bootstrap_admin_email: str = "", admin_pin: str | None = None,
+                 allow_registration: bool = True, max_registrations_per_hour: int = 10,
+                 pin_max_failures: int = 5, pin_lock_seconds: int = 900,
+                 monotonic: Callable[[], float] = time.monotonic):
         if len(secret) < 16:
             raise ValueError("auth secret must be at least 16 characters")
         self.ctx, self.sender, self._secret = ctx, sender, secret.encode()
         self.ttl, self.max_attempts, self.max_sends = ttl_seconds, max_attempts, max_sends
         self.window, self.cooldown, self.global_per_minute = send_window, cooldown, global_per_minute
         self.bootstrap = bootstrap_admin_email.strip().lower()
+        self._admin_pin = validate_admin_pin(admin_pin)
+        self.allow_registration = allow_registration
+        self.max_registrations_per_hour = max_registrations_per_hour
+        self.pin_max_failures, self.pin_lock_seconds = pin_max_failures, pin_lock_seconds
         self._mono = monotonic
         self._pending: dict[str, _Pending] = {}
-        self._sends: dict[str, list[float]] = {}
+        self._pending_reg: dict[str, str] = {}   # email key -> mobile number awaiting a verified code
+        self._sends: dict[str, list[float]] = {}     # code e-mails sent
+        self._attempts: dict[str, list[float]] = {}  # lookups / sign-in attempts
+        self._pin_failures: dict[str, list[float]] = {}
+        self._registrations: list[float] = []
         self._global: list[float] = []
         self._lock = threading.Lock()
 
-    # -- helpers
+    # ---- helpers ---------------------------------------------------------
     def _key(self, email: str) -> str:
         return hmac.new(self._secret, b"k:" + email.encode(), hashlib.sha256).hexdigest()
 
@@ -109,12 +149,20 @@ class AuthService:
             "user_id": new_id("usr"), "name": "Administrator", "email": email, "role": "admin",
             "active": fmt_bool(True), "created_at": self.ctx.stamp()})
 
-    # -- API
-    def request_code(self, email_input: str) -> tuple[str, str | None]:
-        """Returns (generic message, dev-only code to display). Raises RateLimited / DeliveryError."""
-        email = normalize_email(email_input)
+    def _throttle(self, key: str, limit: int = 10) -> None:
+        """Limit lookups / sign-in attempts per email (and globally) to slow enumeration and guessing."""
         now = self._mono()
-        key = self._key(email)
+        with self._lock:
+            self._global = [t for t in self._global if now - t < 60]
+            tries = [t for t in self._attempts.get(key, []) if now - t < self.window]
+            if len(self._global) >= self.global_per_minute or len(tries) >= limit:
+                raise RateLimited("Too many sign-in attempts. Try again shortly.")
+            tries.append(now)
+            self._attempts[key] = tries
+            self._global.append(now)
+
+    def _check_send_limits(self, key: str) -> float:
+        now = self._mono()
         with self._lock:
             self._global = [t for t in self._global if now - t < 60]
             sends = [t for t in self._sends.get(key, []) if now - t < self.window]
@@ -127,58 +175,158 @@ class AuthService:
             sends.append(now)
             self._sends[key] = sends
             self._global.append(now)
+        return now
 
-        self._maybe_bootstrap(email)
-        user = self._find_user(email)
-        if user is None or not user.active:
-            return GENERIC_SENT, None  # no email sent, same response and timing class as success
-
+    def _issue_code(self, email: str, key: str, now: float) -> str | None:
         code = f"{secrets.randbelow(10**6):06d}"
         shown = self.sender.send_code(email, code, self.ttl // 60, "Mobiq")
         with self._lock:
             self._pending[key] = _Pending(self._digest(email, code), now + self.ttl)
-        return GENERIC_SENT, shown
+        return shown
 
-    def sign_in_email_only(self, email_input: str) -> Principal:
-        """Sign in with just an email address (NO verification of mailbox ownership).
-        Anyone who knows or guesses an active user's email gets that user's access, including admin.
-        Enabled only when auth.require_code is false. Attempts are rate limited to slow enumeration."""
-        email = normalize_email(email_input)  # raises ValidationError for empty/invalid input
-        now, key = self._mono(), self._key(email)
+    # ---- accounts --------------------------------------------------------
+    def account_status(self, email_input: str) -> str:
+        """'new' | 'member' | 'admin' | 'inactive'. Drives the login screen (mobile number / PIN prompts).
+        Open registration makes 'is this email known?' answerable by design; lookups are rate limited."""
+        email = normalize_email(email_input)
+        self._throttle("status:" + self._key(email))
+        self._maybe_bootstrap(email)
+        user = self._find_user(email)
+        if user is None:
+            return "new"
+        if not user.active:
+            return "inactive"
+        return "admin" if user.role == "admin" else "member"
+
+    def _create_user(self, email: str, mobile: str) -> User:
+        """Create a user and one line for their mobile number. Refuses duplicates (email or active number)."""
+        with self.ctx.repo.lock():
+            snap = load_snapshot(self.ctx.repo, fresh=True)
+            if any(u.email == email for u in snap.users):
+                raise DuplicateError("That email is already registered. Sign in instead.")
+            if any(x.active and x.mobile_number == mobile for x in snap.lines):
+                raise DuplicateError("That mobile number is already registered to another account.")
+            now = self.ctx.stamp()
+            user = User(new_id("usr"), _display_name(email), email, "user", True, now)
+            line = MobileLine(new_id("line"), user.user_id, "My phone", mobile, "", True, now, now)
+            self.ctx.repo.append("Users", user.to_row())
+            self.ctx.repo.append("MobileLines", line.to_row())
+            audit(self.ctx, Principal(user.user_id, user.email, user.name, user.role), "user.register",
+                  "user", user.user_id, f"last4={mobile[-4:]}")
+        return user
+
+    def _registration_allowed(self) -> None:
+        if not self.allow_registration:
+            raise AuthenticationError(NO_ACCOUNT)
+
+    def register(self, email_input: str, mobile_input: str) -> Principal:
+        """Email-only mode: create the account for a new email, mapped to the given mobile number."""
+        self._registration_allowed()
+        email = normalize_email(email_input)
+        mobile = normalize_phone(mobile_input)
+        self._throttle("status:" + self._key(email))
+        now = self._mono()
         with self._lock:
-            self._global = [t for t in self._global if now - t < 60]
-            tries = [t for t in self._sends.get(key, []) if now - t < self.window]
-            if len(self._global) >= self.global_per_minute or len(tries) >= 10:
-                raise RateLimited("Too many sign-in attempts. Try again shortly.")
-            tries.append(now)
-            self._sends[key] = tries
-            self._global.append(now)
+            self._registrations = [t for t in self._registrations if now - t < 3600]
+            if len(self._registrations) >= self.max_registrations_per_hour:
+                raise RateLimited("Too many new accounts were created recently. Try again later.")
+            self._registrations.append(now)
+        user = self._create_user(email, mobile)
+        return Principal(user.user_id, user.email, user.name, user.role)
+
+    # ---- admin PIN -------------------------------------------------------
+    def check_admin_pin(self, email_input: str, pin_input: str | None) -> None:
+        """Raise unless pin_input matches the configured PIN. Locks the email after repeated failures."""
+        email = normalize_email(email_input)
+        if self._admin_pin is None:
+            raise AuthenticationError(PIN_NOT_CONFIGURED)
+        key, now = self._key(email), self._mono()
+        with self._lock:
+            failures = [t for t in self._pin_failures.get(key, []) if now - t < self.pin_lock_seconds]
+            self._pin_failures[key] = failures
+            if len(failures) >= self.pin_max_failures:
+                raise RateLimited("Too many incorrect PINs. Try again in 15 minutes.")
+        supplied = str(pin_input or "").strip()
+        if not hmac.compare_digest(supplied.encode(), self._admin_pin.encode()):
+            with self._lock:
+                self._pin_failures.setdefault(key, []).append(now)
+            raise AuthenticationError(PIN_WRONG)
+        with self._lock:
+            self._pin_failures.pop(key, None)
+
+    # ---- sign-in ---------------------------------------------------------
+    def request_code(self, email_input: str) -> tuple[str, str | None]:
+        """Returns (generic message, dev-only code to display). Raises RateLimited / DeliveryError."""
+        email = normalize_email(email_input)
+        key = self._key(email)
+        now = self._check_send_limits(key)
         self._maybe_bootstrap(email)
         user = self._find_user(email)
         if user is None or not user.active:
+            return GENERIC_SENT, None  # no email sent, same response and timing class as success
+        return GENERIC_SENT, self._issue_code(email, key, now)
+
+    def request_registration_code(self, email_input: str, mobile_input: str) -> tuple[str, str | None]:
+        """Code mode: a new email proves it owns the mailbox before the account is created at verify_code()."""
+        self._registration_allowed()
+        email = normalize_email(email_input)
+        mobile = normalize_phone(mobile_input)
+        key = self._key(email)
+        self._throttle("status:" + key)  # caps lookups; a rejected request must not use up the one-code-per-30s allowance
+        snap = load_snapshot(self.ctx.repo, fresh=True)
+        if any(u.email == email for u in snap.users):
+            raise DuplicateError("That email is already registered. Sign in instead.")
+        if any(x.active and x.mobile_number == mobile for x in snap.lines):
+            raise DuplicateError("That mobile number is already registered to another account.")
+        now = self._check_send_limits(key)
+        shown = self._issue_code(email, key, now)
+        with self._lock:
+            self._pending_reg[key] = mobile
+        return GENERIC_SENT, shown
+
+    def sign_in_email_only(self, email_input: str, *, admin_pin: str | None = None) -> Principal:
+        """Sign in with just an email address (NO verification of mailbox ownership). Admin accounts also need
+        the admin PIN. Anyone who knows an ordinary user's email gets that user's access. Rate limited."""
+        email = normalize_email(email_input)  # raises ValidationError for empty/invalid input
+        self._throttle("status:" + self._key(email))
+        self._maybe_bootstrap(email)
+        user = self._find_user(email)
+        if user is None:
             raise AuthenticationError(NO_ACCOUNT)
+        if not user.active:
+            raise AuthenticationError(INACTIVE)
+        if user.role == "admin":
+            self.check_admin_pin(email, admin_pin)
         return Principal(user.user_id, user.email, user.name, user.role)
 
-    def verify_code(self, email_input: str, code_input: str) -> Principal:
+    def verify_code(self, email_input: str, code_input: str, *, admin_pin: str | None = None) -> Principal:
         try:
             email = normalize_email(email_input)
         except ValidationError:
             raise AuthenticationError(GENERIC_FAIL) from None
+        existing = self._find_user(email)
+        if existing is not None and existing.active and existing.role == "admin":
+            self.check_admin_pin(email, admin_pin)  # before the code is consumed, so a typo does not burn it
         code = "".join(ch for ch in str(code_input) if ch.isdigit())
         key, now = self._key(email), self._mono()
         with self._lock:
             pending = self._pending.get(key)
             if pending is None or now > pending.expires:
                 self._pending.pop(key, None)
+                self._pending_reg.pop(key, None)
                 raise AuthenticationError(GENERIC_FAIL)
             pending.attempts += 1
             if pending.attempts > self.max_attempts:
                 self._pending.pop(key, None)
+                self._pending_reg.pop(key, None)
                 raise AuthenticationError(GENERIC_FAIL)
             if len(code) != 6 or not hmac.compare_digest(pending.digest, self._digest(email, code)):
                 raise AuthenticationError(GENERIC_FAIL)
             del self._pending[key]  # single use
+            registering_mobile = self._pending_reg.pop(key, None)
         user = self._find_user(email)
+        if user is None and registering_mobile and self.allow_registration:
+            user = self._create_user(email, registering_mobile)
         if user is None or not user.active:
             raise AuthenticationError(GENERIC_FAIL)
         return Principal(user.user_id, user.email, user.name, user.role)

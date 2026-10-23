@@ -56,6 +56,8 @@ Reads are cached per worksheet (`cache_ttl_seconds`, default 30) and invalidated
 
 ## Security model
 
+- **Registration:** with `auth.allow_registration = true` (default) an email that is not in `Users` is asked for a **mobile number** and gets a new account (role `user`, name taken from the email) plus one line ("My phone") for that number. A number already on an active line is refused, so nobody can claim someone else's line; the creation is capped per hour and audited (last four digits only). Anyone can therefore create an account for any unused email, so in email-only mode the first person to use an email owns it. Set `allow_registration = false` to go back to invitation-only. With `require_code = true` the account is created only after the emailed code is verified.
+- **Admin PIN:** admin accounts must also enter the 4-digit `auth.admin_pin` (one PIN shared by all admins, set in the secrets). It is enforced in the auth service, refused if it is trivially guessable (0000, 1234 ...), and an email is locked for 15 minutes after 5 wrong PINs (so someone can also lock an admin out by guessing). If no PIN is configured, admins cannot sign in. A 4-digit PIN is weak: with `require_code = false` it is the only thing protecting admin accounts, so prefer `require_code = true`.
 - **Sign-in mode (`auth.require_code`, default `false`):** the default is **email-only sign-in** - the email must belong to an active user in `Users`, but nothing proves the person owns that mailbox. Anyone who knows or guesses an active user's email, **including an admin's**, can sign in as them and see or change all financial data. Attempts are rate limited, which only slows guessing. Set `require_code = true` (and configure `[smtp]`) for emailed one-time codes.
 - **Identity (code mode):** 6-digit code by email, HMAC-hashed at rest, single-use, expires (default 10 min), max 5 attempts, per-email cooldown (30 s) and cap (3 per 15 min), global cap. Codes are never logged or stored in plaintext.
 - **Roles come from the `Users` sheet**, re-read on every run (`resolve_principal`) and on every sensitive operation (`require_admin`). The session stores only a user id. Demoting or deactivating someone takes effect immediately; a forged `role="admin"` principal is rejected (tested).
@@ -115,3 +117,12 @@ Tokens live in `ui/theme.py` (canvas `#0A0A0F`, surface `#161B22`, accent `#7C3A
 - **AT&T PDF import** — implement `BillExtractor`; its output must be turned into a *draft* bill and reviewed; publishing always needs explicit confirmation.
 - **Payment instructions** — `payment_instructions` setting, shown on the dashboard.
 - **Database** — implement `Repository`.
+
+## Deploying to Google Cloud Run (untested here)
+Files: `Dockerfile`, `.dockerignore`, `.gcloudignore`, `deploy/deploy_cloudrun.ps1`.
+1. Install the gcloud CLI, run `gcloud auth login`, and enable billing on your Google Cloud project (the free quota still needs a billing account; add a budget alert).
+2. Fill in `.streamlit/secrets.toml` (Sheets service account, `[auth]`, `[smtp]`). For a public URL set `require_code = true`.
+3. From the project root: `.\deploy\deploy_cloudrun.ps1 -Project <your-project-id>`. It enables the APIs, stores `secrets.toml` in Secret Manager (never in the image), lets Cloud Run read it, then builds and deploys with `--max-instances 1 --session-affinity --timeout 3600`.
+4. Re-run the same command to redeploy after code or secret changes.
+
+Notes: the instance sleeps when idle (first load takes 10-30 s) and sign-in sessions end when it restarts; `--max-instances 1` is required because sign-in codes, rate limits and the data cache live in process memory.

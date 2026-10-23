@@ -114,7 +114,8 @@ table.mq-table td.sec {{ color: var(--mq-text-2); }}
 .stTextInput input, .stNumberInput input, .stDateInput input, .stTextArea textarea, div[data-baseweb="select"] > div {{
   background: var(--mq-canvas) !important; color: var(--mq-text) !important; border-color: var(--mq-border) !important; }}
 div[data-testid="stAlert"] {{ background: var(--mq-surface); border: 1px solid var(--mq-border); color: var(--mq-text); }}
-div[data-testid="stExpander"] {{ background: var(--mq-surface); border: 1px solid var(--mq-border); border-radius: var(--mq-radius); }}
+div[data-testid="stExpander"] {{ background: var(--mq-surface); border: 1px solid var(--mq-border); border-radius: var(--mq-radius);
+  margin-top: 1.25rem; }}
 button[role="tab"][aria-selected="true"] {{ color: var(--mq-text); border-bottom-color: var(--mq-accent); }}
 .stTabs [data-baseweb="tab-highlight"] {{ background-color: var(--mq-accent); }}
 div[data-testid="stColumn"] .stButton > button {{ min-height: 2.5rem; }}

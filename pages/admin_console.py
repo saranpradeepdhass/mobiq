@@ -248,13 +248,22 @@ def _payments(ctx, actor, snap, mailer):
 
     missing = [lid for lid in snap.bill_line_ids(bid) if not any(s.bill_id == bid and s.line_id == lid for s in snap.shares)]
     if missing and bill.bill_status != "closed":
-        with st.form(f"new_share_{bid}", clear_on_submit=True):
-            lid = st.selectbox("Line", missing, format_func=lambda i: _line_name(snap, i))
-            amt = st.text_input("Amount due")
-            ok = st.checkbox("I confirm adding a share to a published bill") if bill.bill_status == "published" else False
-            if st.form_submit_button("Add share"):
-                _act(lambda: bill_service.create_share(ctx, actor, bill_id=bid, line_id=lid, amount_due=amt,
-                                                       confirm_material_change=ok), "Share added.")
+        add_key = "mq_add_share_open"  # hidden until the admin clicks the button
+        add_open = st.session_state.get(add_key, False)
+        st.button("Close add share" if add_open else "Add share", key="mq_add_share_btn",
+                  on_click=lambda: st.session_state.update({add_key: not add_open}))
+        if add_open:
+            def add_share():
+                bill_service.create_share(ctx, actor, bill_id=bid, line_id=lid, amount_due=amt,
+                                          confirm_material_change=ok)
+                st.session_state[add_key] = False  # collapse again after a successful save
+
+            with st.form(f"new_share_{bid}", clear_on_submit=True):
+                lid = st.selectbox("Line", missing, format_func=lambda i: _line_name(snap, i))
+                amt = st.text_input("Amount due")
+                ok = st.checkbox("I confirm adding a share to a published bill") if bill.bill_status == "published" else False
+                if st.form_submit_button("Save share", type="primary"):
+                    _act(add_share, "Share added.")
     if not views:
         return
     if bill.bill_status == "closed":

@@ -74,14 +74,6 @@ def render(rt, principal: Principal) -> None:
     if s.previous_outstanding > 0:
         ui.show("warning", f"{format_money(s.previous_outstanding, cur)} from earlier months is still unpaid, separate from this month's bill.")
 
-    ui.section("Trend")
-    totals = (monthly_bill_totals(snap.bills) if principal.is_admin and not personal
-              else monthly_share_totals(scope_views))
-    if len(totals) >= 2:
-        st.altair_chart(trend_chart(totals), width="stretch")
-    else:
-        ui.render(ui.empty_state("Not enough history", "The trend appears once there are two or more billing months."))
-
     if principal.is_admin:  # admin: current-month status table (unchanged)
         ui.section(f"Payments · {month_label(period)}")
         cur_views = [v for v in scope_views if v.month == period]
@@ -102,6 +94,15 @@ def render(rt, principal: Principal) -> None:
         ui.section("Historical dues")
         ui.render(ui.history_table(hist, cur))
     _payment_instructions(settings)
+
+    ui.section("Trend")
+    totals = (monthly_bill_totals(snap.bills) if principal.is_admin and not personal
+              else monthly_share_totals(scope_views))
+    if len(totals) >= 2:
+        st.altair_chart(trend_chart(totals), width="stretch")
+    else:
+        ui.render(ui.empty_state("Not enough history", "The trend appears once there are two or more billing months."))
+
     if snap.warnings and principal.is_admin:
         with st.expander(f"Data warnings ({len(snap.warnings)})"):
             for w in snap.warnings:

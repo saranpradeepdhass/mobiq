@@ -27,8 +27,8 @@ def test_reminder_email_has_due_details_and_masks_number(world, ctx, admin):
     to = reminder_service.send_payment_reminder(ctx, admin, shares["l_sam"], mailer)
     assert to == "sam@example.com" and len(mailer.sent) == 1
     _, subject, body = mailer.sent[0]
-    assert "$40.00" in subject and "Oct 20, 2026" in subject
-    for expected in ("Sam phone", "•••• 0004", "$40.00", "Oct 2026", "Overdue"):
+    assert "$40.00" in subject  # subject wording was customised by the owner; the due date is in the body
+    for expected in ("Sam phone", "•••• 0004", "$40.00", "Oct 2026", "Oct 20, 2026", "Overdue"):
         assert expected in body
     assert "5550100004" not in body
     assert "reminder.send" in [r["action"] for r in ctx.repo.list("AuditLog")]

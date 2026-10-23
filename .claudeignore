@@ -1,0 +1,21 @@
+# Block virtual environment
+.venv/
+venv
+
+# Block streamlit
+.streamlit/
+
+# Block python cache_ttl_seconds
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Block git history
+.git/
+
+
+# Block temporary IDE and OS Files 
+.DS_Store
+.vscode/
+.idea/

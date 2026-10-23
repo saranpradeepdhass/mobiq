@@ -5,15 +5,18 @@ import time
 
 import streamlit as st
 
-st.set_page_config(page_title="Mobiq", page_icon="📊", layout="wide", initial_sidebar_state="auto")
+st.set_page_config(page_title="Mobiq", page_icon="📲", layout="wide", initial_sidebar_state="auto")
 
 # Streamlit's own menu/deploy button/footer are hidden in ui/theme.py (the sidebar toggle is kept on purpose).
+
+SHOW_GUEST_LOGIN = False  # True shows the read-only "Guest" tab on the login screen (code kept; guests see nothing by default)
 
 from core.snapshot import load_snapshot  # noqa: E402
 from pages import admin_console, dashboard  # noqa: E402
 from services.auth_service import RateLimited, DeliveryError, resolve_principal  # noqa: E402
 from services.common import GUEST, AuthenticationError, Principal  # noqa: E402
-from services.repository import StorageError  # noqa: E402
+from services.config import load_config  # noqa: E402
+from services.repository import DuplicateError, StorageError  # noqa: E402
 from services.runtime import Runtime, build_runtime  # noqa: E402
 from ui import components as ui  # noqa: E402
 from ui.theme import apply_theme  # noqa: E402
@@ -23,7 +26,7 @@ from utils.validators import ValidationError  # noqa: E402
 
 @st.cache_resource(show_spinner="Connecting…")
 def get_runtime() -> Runtime:
-    return build_runtime(st.secrets)
+    return build_runtime(load_config(st.secrets))
 
 
 def logout() -> None:
@@ -38,6 +41,9 @@ def current_principal(rt: Runtime) -> Principal | None:
     if not auth:
         return None
     if auth.get("guest"):
+        if not SHOW_GUEST_LOGIN:  # a stale guest session must not survive while the feature is hidden
+            st.session_state.clear()
+            return None
         return GUEST
     if time.time() - auth["at"] > rt.session_hours * 3600:
         st.session_state.clear()
@@ -54,6 +60,9 @@ def login_view(rt: Runtime) -> None:
               '<div class="mq-sub" style="margin-bottom:1.5rem">Mobile bill splitting, simplified.</div>')
     _, mid, _ = st.columns([1, 2, 1])
     with mid:
+        if not SHOW_GUEST_LOGIN:
+            _signin_form(rt)
+            return
         signin, guest = st.tabs(["Sign in", "Guest"])
         with signin:
             _signin_form(rt)
@@ -64,70 +73,143 @@ def login_view(rt: Runtime) -> None:
                 st.rerun()
 
 
-def _email_only_form(rt: Runtime) -> None:
-    with st.form("email_signin"):
-        email = st.text_input("Email *", autocomplete="email", placeholder="you@example.com")
-        if st.form_submit_button("Sign in", type="primary"):
-            if not email.strip():
-                ui.show("error", "Email is required.")
-                return
-            try:
-                p = rt.auth.sign_in_email_only(email)
-                st.session_state.clear()
-                st.session_state["mq_auth"] = {"user_id": p.user_id, "at": time.time()}
-                st.rerun()
-            except (ValidationError, AuthenticationError, RateLimited) as exc:
-                ui.show("error", str(exc))
-            except StorageError:
-                ui.show("error", "Sign-in is temporarily unavailable. Please try again.")
-    ui.render('<div class="mq-meta">New here? Ask an administrator to invite your email address first.</div>')
+_LOGIN_KEYS = ("mq_login", "mq_login_msg", "mq_dev_code")
+_LOGIN_ERRORS = (ValidationError, AuthenticationError, RateLimited, DuplicateError)
+
+
+def _finish_login(p: Principal) -> None:
+    st.session_state.clear()
+    st.session_state["mq_auth"] = {"user_id": p.user_id, "at": time.time()}
+    st.rerun()
+
+
+def _reset_login() -> None:
+    for k in _LOGIN_KEYS:
+        st.session_state.pop(k, None)
+
+
+def _go(stage: str, **extra) -> None:
+    """Move the sign-in wizard to another step (state lives only in this browser session)."""
+    st.session_state["mq_login"] = {**st.session_state.get("mq_login", {}), "stage": stage, **extra}
+    st.rerun()
 
 
 def _signin_form(rt: Runtime) -> None:
-    if not rt.require_code:
-        _email_only_form(rt)
-        return
-    pending = st.session_state.get("mq_login_email")
+    """Steps: email -> [mobile (new email)] -> [code (when require_code)] -> [PIN (admins)]."""
+    state = st.session_state.get("mq_login", {"stage": "email"})
+    stage, email = state["stage"], state.get("email", "")
     if rt.dev_codes:
         ui.show("warning", "Development mode: sign-in codes are shown on screen. Do not use this setting in production.")
-    if not pending:
-        with st.form("request_code"):
-            email = st.text_input("Email", autocomplete="email")
-            if st.form_submit_button("Email me a code", type="primary"):
-                try:
-                    msg, shown = rt.auth.request_code(email)
-                    st.session_state["mq_login_email"] = email.strip().lower()
-                    st.session_state["mq_login_msg"] = msg
-                    st.session_state["mq_dev_code"] = shown
-                    st.rerun()
-                except ValidationError as exc:
-                    ui.show("error", str(exc))
-                except RateLimited as exc:
-                    ui.show("error", str(exc))
-                except (DeliveryError, StorageError):
-                    ui.show("error", "We could not send a code right now. Please try again later.")
-        ui.render('<div class="mq-meta">New here? Ask an administrator to invite your email address first.</div>')
+    try:
+        if stage == "email":
+            _step_email(rt)
+        elif stage == "mobile":
+            _step_mobile(rt, email)
+        elif stage == "code":
+            _step_code(rt, email, state.get("is_admin", False))
+        elif stage == "pin":
+            _step_pin(rt, email)
+    except StorageError:
+        ui.show("error", "Sign-in is temporarily unavailable. Please try again.")
+    except DeliveryError:
+        ui.show("error", "We could not send the email right now. Please try again later.")
+
+
+def _step_email(rt: Runtime) -> None:
+    with st.form("login_email"):
+        email = st.text_input("Email *", autocomplete="email", placeholder="you@example.com")
+        go = st.form_submit_button("Continue", type="primary")
+    if not go:
+        ui.render('<div class="mq-meta">New here? Enter your email and we will ask for your mobile number.</div>')
         return
-    ui.show("info", st.session_state.get("mq_login_msg", ""))
+    if not email.strip():
+        ui.show("error", "Email is required.")
+        return
+    try:
+        status = rt.auth.account_status(email)
+        clean = email.strip().lower()
+        if status == "inactive":
+            ui.show("error", "This account is disabled. Ask an administrator for help.")
+        elif status == "new":
+            if not rt.auth.allow_registration:
+                ui.show("error", "We couldn't sign you in with that email. Ask an administrator to invite you.")
+            else:
+                _go("mobile", email=clean)
+        elif rt.require_code:
+            msg, shown = rt.auth.request_code(clean)
+            st.session_state["mq_login_msg"], st.session_state["mq_dev_code"] = msg, shown
+            _go("code", email=clean, is_admin=(status == "admin"))
+        elif status == "admin":
+            _go("pin", email=clean)
+        else:
+            _finish_login(rt.auth.sign_in_email_only(clean))
+    except _LOGIN_ERRORS as exc:
+        ui.show("error", str(exc))
+
+
+def _step_mobile(rt: Runtime, email: str) -> None:
+    ui.show("info", f"{email} is new here. Enter your mobile number to create your account.")
+    with st.form("login_mobile"):
+        mobile = st.text_input("Mobile number *", autocomplete="tel", placeholder="e.g. 5551234567")
+        create = st.form_submit_button("Create account", type="primary")
+        back = st.form_submit_button("Use a different email")
+    if back:
+        _reset_login()
+        st.rerun()
+    if not create:
+        return
+    if not mobile.strip():
+        ui.show("error", "Mobile number is required.")
+        return
+    try:
+        if rt.require_code:
+            msg, shown = rt.auth.request_registration_code(email, mobile)
+            st.session_state["mq_login_msg"], st.session_state["mq_dev_code"] = msg, shown
+            _go("code", email=email, is_admin=False)
+        else:
+            _finish_login(rt.auth.register(email, mobile))
+    except _LOGIN_ERRORS as exc:
+        ui.show("error", str(exc))
+
+
+def _step_code(rt: Runtime, email: str, is_admin: bool) -> None:
+    ui.show("info", st.session_state.get("mq_login_msg", "") or f"A sign-in code was sent to {email}.")
     if st.session_state.get("mq_dev_code"):
         ui.show("info", f"Dev code: {st.session_state['mq_dev_code']}")
-    with st.form("verify_code"):
-        code = st.text_input("6-digit code", max_chars=8, autocomplete="one-time-code")
-        c1, c2 = st.columns(2)
-        if c1.form_submit_button("Sign in", type="primary"):
-            try:
-                p = rt.auth.verify_code(pending, code)
-                st.session_state.clear()
-                st.session_state["mq_auth"] = {"user_id": p.user_id, "at": time.time()}
-                st.rerun()
-            except AuthenticationError as exc:
-                ui.show("error", str(exc))
-            except StorageError:
-                ui.show("error", "Sign-in is temporarily unavailable. Please try again.")
-        if c2.form_submit_button("Use a different email"):
-            for k in ("mq_login_email", "mq_login_msg", "mq_dev_code"):
-                st.session_state.pop(k, None)
-            st.rerun()
+    with st.form("login_code"):
+        code = st.text_input("6-digit code *", max_chars=8, autocomplete="one-time-code")
+        pin = st.text_input("Admin PIN *", type="password", max_chars=4) if is_admin else None
+        go = st.form_submit_button("Sign in", type="primary")
+        back = st.form_submit_button("Use a different email")
+    if back:
+        _reset_login()
+        st.rerun()
+    if not go:
+        return
+    try:
+        _finish_login(rt.auth.verify_code(email, code, admin_pin=pin))
+    except _LOGIN_ERRORS as exc:
+        ui.show("error", str(exc))
+
+
+def _step_pin(rt: Runtime, email: str) -> None:
+    ui.show("info", f"{email} is an administrator account. Enter the 4-digit admin PIN.")
+    with st.form("login_pin"):
+        pin = st.text_input("Admin PIN *", type="password", max_chars=4, autocomplete="off")
+        go = st.form_submit_button("Sign in", type="primary")
+        back = st.form_submit_button("Use a different email")
+    if back:
+        _reset_login()
+        st.rerun()
+    if not go:
+        return
+    if not pin.strip():
+        ui.show("error", "PIN is required.")
+        return
+    try:
+        _finish_login(rt.auth.sign_in_email_only(email, admin_pin=pin))
+    except _LOGIN_ERRORS as exc:
+        ui.show("error", str(exc))
 
 
 def lambda_free_login(rt: Runtime):

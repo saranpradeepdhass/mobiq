@@ -1,0 +1,15 @@
+# Used by `gcloud run deploy --source .` when uploading the source for Cloud Build.
+# Keep this in step with .dockerignore. Secrets must never be uploaded.
+.git
+.gitignore
+.venv
+.devcontainer
+__pycache__
+*.pyc
+.pytest_cache
+.streamlit/secrets.toml
+*.json
+service-account*
+tests
+scripts
+sheets_template

@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping
 
-from services.auth_service import AuthService, DevScreenSender, SmtpSender
+from services.auth_service import AuthService, DevScreenSender, SmtpSender, validate_admin_pin
 from services.common import ServiceContext
 from services.google_sheets_service import GoogleSheetsRepository
 from services.mailer import Mailer, SmtpMailer
@@ -56,8 +56,14 @@ def build_runtime(cfg: Mapping, *, repo: Repository | None = None, mailer: Maile
     secret = str(auth_cfg.get("secret", ""))
     if not secret:
         raise StorageError("[auth] secret is not configured. Add a long random string to .streamlit/secrets.toml.")
+    raw_pin = auth_cfg.get("admin_pin")
+    try:
+        admin_pin = validate_admin_pin(None if raw_pin is None else (f"{raw_pin:04d}" if isinstance(raw_pin, int) else str(raw_pin)))
+    except ValueError as exc:
+        raise StorageError(str(exc)) from None
     auth = AuthService(ctx, sender, secret, ttl_seconds=int(auth_cfg.get("code_ttl_seconds", 600)),
-                       bootstrap_admin_email=str(auth_cfg.get("bootstrap_admin_email", "")))
+                       bootstrap_admin_email=str(auth_cfg.get("bootstrap_admin_email", "")),
+                       admin_pin=admin_pin, allow_registration=bool(auth_cfg.get("allow_registration", True)))
     if mailer is None and smtp_cfg:
         mailer = _smtp_mailer(smtp_cfg)
     return Runtime(ctx, auth, dev, require_code, float(auth_cfg.get("session_hours", 8)), mailer)

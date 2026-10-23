@@ -265,3 +265,51 @@ def test_streamlit_chrome_hidden_without_hiding_the_sidebar_toggle():
 
 def test_shares_table_scrolls_sideways_on_phones():
     assert ".st-key-mq_shares" in CSS and "flex-wrap: nowrap" in CSS and "overflow-x: auto" in CSS
+
+
+def _add_share_script():
+    import streamlit as st
+    from pages import admin_console
+    from services.common import Principal
+    from tests.conftest import sample_runtime
+
+    @st.cache_resource
+    def rt():
+        r = sample_runtime()
+        # a line on the October bill that has no share yet, so the "Add share" button is offered
+        r.ctx.repo.append("MobileLines", {"line_id": "l_extra", "user_id": "u_sam", "line_label": "Sam tablet",
+                                          "mobile_number": "5550100077", "account_reference": "", "active": "TRUE",
+                                          "created_at": "t", "updated_at": "t"})
+        bill = r.ctx.repo.get("Bills", "b_m0")
+        r.ctx.repo.update("Bills", "b_m0", {"line_ids": bill["line_ids"] + ",l_extra"})
+        return r
+
+    admin_console.render(rt(), Principal("u_admin", "admin@example.com", "Admin", "admin"))
+
+
+def test_add_share_form_is_hidden_until_button_clicked_and_saves():
+    from streamlit.testing.v1 import AppTest
+
+    at = AppTest.from_function(_add_share_script, default_timeout=30).run()
+    assert not at.exception
+    assert any(b.key == "mq_add_share_btn" and b.label == "Add share" for b in at.button)
+    assert not any(b.label == "Save share" for b in at.button)             # hidden by default
+    next(b for b in at.button if b.key == "mq_add_share_btn").click().run()
+    assert any(b.label == "Save share" for b in at.button)                  # opened by the button
+    assert any(b.key == "mq_add_share_btn" and b.label == "Close add share" for b in at.button)
+    next(b for b in at.button if b.key == "mq_add_share_btn").click().run()
+    assert not any(b.label == "Save share" for b in at.button)             # and closes again
+    # open again and save a share on the published bill (needs the confirmation tick)
+    next(b for b in at.button if b.key == "mq_add_share_btn").click().run()
+    next(t for t in at.text_input if t.label == "Amount due").input("12.00")
+    next(c for c in at.checkbox if c.label.startswith("I confirm adding a share")).check()
+    next(b for b in at.button if b.label == "Save share").click().run()
+    assert not at.exception
+    assert len([b for b in at.button if b.key and b.key.startswith("notify_")]) == 6   # the new share is listed
+    assert not any(b.label == "Save share" for b in at.button)             # collapsed after saving
+
+
+def test_guest_login_is_hidden_behind_a_switch():
+    src = (Path(__file__).resolve().parent.parent / "app.py").read_text(encoding="utf-8")
+    assert "SHOW_GUEST_LOGIN = False" in src                      # guest tab hidden (code kept behind the switch)
+    assert "st.logo" not in src                                    # the header logo was reverted (it overlapped the page)
