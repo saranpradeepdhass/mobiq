@@ -17,7 +17,7 @@ from openpyxl import Workbook  # noqa: E402
 from openpyxl.styles import Font  # noqa: E402
 
 from core.models import TABLES  # noqa: E402
-from services.demo_data import sample_rows  # noqa: E402
+from sample_data import sample_rows  # noqa: E402
 
 
 def build(out: Path, sample: bool) -> None:

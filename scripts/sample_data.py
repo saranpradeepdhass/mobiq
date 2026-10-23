@@ -1,4 +1,4 @@
-"""Clearly marked SAMPLE data, used by demo mode, the Sheets seeding script and the CSV template.
+"""Clearly marked SAMPLE data, used only by the Sheets seeding script, the CSV/XLSX templates and tests.
 All names, emails and numbers are fictional. Replace or delete before real use."""
 from __future__ import annotations
 
@@ -88,7 +88,7 @@ def sample_rows(today: date | None = None) -> dict[str, list[dict]]:
     return rows
 
 
-def load_demo(repo: Repository, today: date | None = None) -> None:
+def load_sample(repo: Repository, today: date | None = None) -> None:
     for table, rows in sample_rows(today).items():
         for row in rows:
             repo.append(table, row)

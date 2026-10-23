@@ -7,7 +7,7 @@ Streamlit app backed by Google Sheets for splitting monthly mobile bills: per-li
 | Verified here | **Not** verified here |
 |---|---|
 | 93 pytest tests pass (business rules, services, auth, authorization, UI tokens, Sheets adapter against a **fake** gspread client) | Any call to the **real** Google Sheets API (no credentials were available) |
-| The app boots headless and walks guest / user / admin flows via Streamlit `AppTest` in demo mode | Real SMTP delivery of sign-in codes |
+| The app boots headless and renders the dashboard and admin screens via Streamlit `AppTest` over an in-memory repository | Real SMTP delivery of sign-in codes |
 | | Any hosted deployment (Streamlit Community Cloud etc.) |
 | | Visual rendering in a real browser (CSS is covered by token/structure tests only) |
 
@@ -17,7 +17,7 @@ Follow the *smoke test* below with your own credentials before relying on it.
 
 1. **Invitation model for registration.** An admin invites an email (creates an active row in `Users`); the invitee then signs in with an emailed code. Unknown or inactive emails never get a code and see the same message as valid ones. The very first admin is created from `auth.bootstrap_admin_email`, only while no admin exists.
 2. **Admins mark shares paid.** Users cannot submit payments. On *Shares & payments* each share has a **Paid** switch: on = one confirmed payment for the remaining balance; off = a reversal of every confirmed payment. There is no UI for partial payments, pending/rejected states or manual reversals; the calculations still honour such rows if they exist in the sheet (confirmed only).
-2a. **Notify (manual reminders).** Each unpaid share on *Shares & payments* has a **Notify** button that emails the line owner the due details (line, month, amount due, paid so far, balance, due date, status, other unpaid bills, payment instructions). It only sends when an admin clicks it, needs `[smtp]` in secrets, is refused for paid/draft shares and inactive owners, is limited to one email per share per 15 minutes, and is recorded in `AuditLog` (no message body stored). In demo mode emails are recorded in memory, not sent. Nothing is ever sent automatically.
+2a. **Notify (manual reminders).** Each unpaid share on *Shares & payments* has a **Notify** button that emails the line owner the due details (line, month, amount due, paid so far, balance, due date, status, other unpaid bills, payment instructions). It only sends when an admin clicks it, needs `[smtp]` in secrets, is refused for paid/draft shares and inactive owners, is limited to one email per share per 15 minutes, and is recorded in `AuditLog` (no message body stored). Nothing is ever sent automatically.
 3. **Status precedence:** `Paid` > `Overdue` > `Partial` > `Due`. A partially paid share past its due date shows *Overdue* (paid amount still shown). Due today is not overdue.
 4. **"Total collected"** = confirmed payments (capped at the amount due) against shares in the *current* period. Earlier months appear only under *Previous arrears* / *Historical dues*.
 5. **Draft bills are invisible to users**; closed bills stay in historical dues until paid.
@@ -33,7 +33,7 @@ app.py                      entry: config, session, login, navigation, header
 pages/dashboard.py          read-only dashboard (UI only)
 pages/admin_console.py      admin UI; every action calls a service
 services/
-  repository.py             Repository interface + InMemoryRepository (tests/demo)
+  repository.py             Repository interface + InMemoryRepository (tests)
   google_sheets_service.py  Google Sheets implementation (cache, retry, optimistic concurrency)
   auth_service.py           email-code auth, rate limiting, principal resolution
   access_service.py         read-side authorization (user/admin/guest views)
@@ -42,7 +42,7 @@ services/
   directory_service.py      users, mobile lines, settings
   reminder_service.py       extension points (reminders, PDF import) - inert by default
   common.py                 Principal, require_admin, audit log, errors
-  runtime.py, demo_data.py  wiring from secrets; SAMPLE data
+  runtime.py                wiring from secrets (Google Sheets + SMTP)
 core/                       models, worksheet schemas, validated snapshot loader
 utils/                      calculations (pure), validators, formatting
 ui/                         theme.py (CSS tokens), components.py (HTML builders), charts.py
@@ -86,11 +86,7 @@ Reads are cached per worksheet (`cache_ttl_seconds`, default 30) and invalidated
 py -m venv .venv
 .\.venv\Scripts\python -m pip install -r requirements.txt
 ```
-Credential-free demo (in-memory SAMPLE data; sign-in codes shown on screen; data resets on restart):
-```powershell
-$env:MOBIQ_BACKEND="demo"; .\.venv\Scripts\python -m streamlit run app.py
-```
-Sign in as `admin@example.com` or `alex@example.com` (Alex has two lines and arrears).
+There is no demo mode: the app always uses the Google Sheet configured in `.streamlit/secrets.toml` (next step).
 
 ### 3. Real configuration
 Copy `.streamlit/secrets.toml.example` to `.streamlit/secrets.toml` and fill in: `[gsheets]` (spreadsheet id + the service-account JSON fields), `[auth]` (`secret`, `bootstrap_admin_email`), `[smtp]` (any SMTP provider). Then:

@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from core.models import TABLES  # noqa: E402
-from services.demo_data import sample_rows  # noqa: E402
+from sample_data import sample_rows  # noqa: E402
 
 
 def write_csvs(out: Path, sample: bool) -> None:

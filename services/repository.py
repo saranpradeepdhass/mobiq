@@ -59,7 +59,7 @@ class Repository(ABC):
 
 
 class InMemoryRepository(Repository):
-    """Used by tests and the credential-free demo mode."""
+    """In-memory repository used by tests."""
 
     def __init__(self) -> None:
         super().__init__()

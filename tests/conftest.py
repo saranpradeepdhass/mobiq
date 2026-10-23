@@ -1,6 +1,11 @@
 from datetime import datetime, timedelta, timezone
 
+import sys
+from pathlib import Path
+
 import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))  # sample_data lives with the scripts
 
 from core.models import fmt_bool
 from services.common import Principal, ServiceContext
@@ -65,3 +70,14 @@ def add_payment(repo, share_id, amount, status="confirmed", pid=None, date="2026
     repo.append("Payments", {"payment_id": pid or f"p_t{n}", "share_id": share_id, "user_id": "u_x", "amount": amount,
                              "payment_date": date, "payment_status": status, "payment_method": "", "notes": "",
                              "created_at": "t", "reverses_payment_id": ""})
+
+
+def sample_runtime():
+    """A Runtime over an in-memory repository holding the SAMPLE dataset (no Google credentials needed)."""
+    from sample_data import load_sample
+    from services.mailer import OutboxMailer
+    from services.runtime import build_runtime
+
+    repo = InMemoryRepository()
+    load_sample(repo)
+    return build_runtime({"auth": {"secret": "t" * 32}}, repo=repo, mailer=OutboxMailer())

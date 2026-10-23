@@ -38,7 +38,7 @@ class GoogleSheetsRepository(Repository):
     @classmethod
     def from_config(cls, cfg: Mapping, **kwargs) -> "GoogleSheetsRepository":
         """cfg: {'spreadsheet_id': ..., 'service_account': {...service account JSON fields...}}"""
-        import gspread  # imported lazily so tests and demo mode do not need credentials
+        import gspread  # imported lazily so tests do not need credentials
 
         try:
             client = gspread.service_account_from_dict(dict(cfg["service_account"]))

@@ -1,23 +1,20 @@
-"""Builds the repository, service context and auth service from configuration (Streamlit secrets or env)."""
+"""Builds the repository, service context and auth service from configuration (Streamlit secrets)."""
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from typing import Mapping
 
 from services.auth_service import AuthService, DevScreenSender, SmtpSender
-from services.mailer import Mailer, OutboxMailer, SmtpMailer
 from services.common import ServiceContext
-from services.demo_data import load_demo
 from services.google_sheets_service import GoogleSheetsRepository
-from services.repository import InMemoryRepository, Repository, StorageError
+from services.mailer import Mailer, SmtpMailer
+from services.repository import Repository, StorageError
 
 
 @dataclass
 class Runtime:
     ctx: ServiceContext
     auth: AuthService
-    demo: bool
     dev_codes: bool
     require_code: bool
     session_hours: float
@@ -36,36 +33,31 @@ def _smtp_mailer(smtp: Mapping) -> SmtpMailer:
                       smtp["sender"], bool(smtp.get("use_ssl", False)))
 
 
-def build_runtime(cfg: Mapping) -> Runtime:
-    """cfg behaves like st.secrets. MOBIQ_BACKEND=demo env var also selects demo mode."""
-    mobiq, auth_cfg = _get(cfg, "mobiq"), _get(cfg, "auth")
-    backend = os.environ.get("MOBIQ_BACKEND") or mobiq.get("backend", "sheets")
-    demo = backend == "demo"
-    repo: Repository
-    if demo:
-        repo = InMemoryRepository()
-        load_demo(repo)
-    else:
+def build_runtime(cfg: Mapping, *, repo: Repository | None = None, mailer: Mailer | None = None) -> Runtime:
+    """cfg behaves like st.secrets. `repo` / `mailer` may be injected (tests); otherwise Google Sheets and SMTP
+    are built from the configuration."""
+    auth_cfg = _get(cfg, "auth")
+    if repo is None:
         gs = _get(cfg, "gsheets")
         if not gs:
-            raise StorageError("Google Sheets is not configured. Add [gsheets] to secrets, or set backend = \"demo\".")
+            raise StorageError("Google Sheets is not configured. Add [gsheets] to .streamlit/secrets.toml.")
         repo = GoogleSheetsRepository.from_config(gs, ttl=float(gs.get("cache_ttl_seconds", 30)))
     ctx = ServiceContext(repo)
 
+    smtp_cfg = _get(cfg, "smtp")
     require_code = bool(auth_cfg.get("require_code", False))
-    dev = require_code and (bool(auth_cfg.get("dev_show_code", False)) or demo and not _get(cfg, "smtp"))
-    if not require_code:
-        sender = DevScreenSender()  # unused: no codes are issued in email-only mode
-    elif dev:
-        sender = DevScreenSender()
+    dev = require_code and bool(auth_cfg.get("dev_show_code", False))
+    if not require_code or dev:
+        sender = DevScreenSender()  # email-only mode issues no codes; dev mode shows them on screen
     else:
-        smtp = _get(cfg, "smtp")
-        if not smtp:
+        if not smtp_cfg:
             raise StorageError("[smtp] is not configured; cannot send sign-in codes.")
-        sender = SmtpSender(_smtp_mailer(smtp))
-    secret = str(auth_cfg.get("secret", "")) or ("demo-only-secret-not-for-production" if demo else "")
+        sender = SmtpSender(_smtp_mailer(smtp_cfg))
+    secret = str(auth_cfg.get("secret", ""))
+    if not secret:
+        raise StorageError("[auth] secret is not configured. Add a long random string to .streamlit/secrets.toml.")
     auth = AuthService(ctx, sender, secret, ttl_seconds=int(auth_cfg.get("code_ttl_seconds", 600)),
                        bootstrap_admin_email=str(auth_cfg.get("bootstrap_admin_email", "")))
-    smtp_cfg = _get(cfg, "smtp")
-    mailer: Mailer | None = _smtp_mailer(smtp_cfg) if smtp_cfg else (OutboxMailer() if demo else None)
-    return Runtime(ctx, auth, demo, dev, require_code, float(auth_cfg.get("session_hours", 8)), mailer)
+    if mailer is None and smtp_cfg:
+        mailer = _smtp_mailer(smtp_cfg)
+    return Runtime(ctx, auth, dev, require_code, float(auth_cfg.get("session_hours", 8)), mailer)

@@ -18,7 +18,7 @@ from utils.calculations import build_share_views
 from utils.formatting import date_label, format_money, mask_phone, month_label
 from utils.validators import GUEST_POLICIES, ValidationError
 
-BILL_CREATION_ENABLED = False  # UI switch only; set True to re-enable the "Create bill" form
+SHOW_BILL_MANAGEMENT = False  # UI switch: True shows "Create bill" and "Manage a bill" on the Bills tab (code kept intact)
 
 _EXPECTED = (ValidationError, BusinessRuleError, DuplicateError, NotFoundError, ConflictError,
              AuthorizationError, ConfirmationRequired, StorageError)
@@ -88,21 +88,23 @@ def _bills(ctx, actor, snap):
         ui.render(ui.table(["Month", "Status", "Total", "Settled", "Pending", "Lines", "Due"], rows, numeric={2, 3, 4}))
     else:
         ui.render(ui.empty_state("No bills", "No billing periods exist yet."))
+    if SHOW_BILL_MANAGEMENT:
+        _bill_management(ctx, actor, snap)
 
+
+def _bill_management(ctx, actor, snap):
+    """Create a bill, then edit / split / publish / close it. Hidden unless SHOW_BILL_MANAGEMENT is True."""
+    cur = snap.settings.currency
     active_lines = [x for x in snap.lines if x.active]
-    with st.expander("Create bill (disabled)" if not BILL_CREATION_ENABLED else "Create bill"):
-        if not BILL_CREATION_ENABLED:
-            st.caption("Creating bills from this screen is currently disabled.")
-        off = not BILL_CREATION_ENABLED
+    with st.expander("Create bill", expanded=not snap.bills):
         with st.form("create_bill", clear_on_submit=True):
-            month = st.text_input("Billing month (YYYY-MM)", value=snap.settings.period(ctx.now()), disabled=off)
-            total = st.text_input("Total bill", placeholder="215.00", disabled=off)
+            month = st.text_input("Billing month (YYYY-MM)", value=snap.settings.period(ctx.now()))
+            total = st.text_input("Total bill", placeholder="215.00")
             period = snap.settings.period(ctx.now())
-            due = st.date_input("Due date", value=date(int(period[:4]), int(period[5:7]), snap.settings.default_due_day),
-                                disabled=off)
+            due = st.date_input("Due date", value=date(int(period[:4]), int(period[5:7]), snap.settings.default_due_day))
             ids = st.multiselect("Mobile lines on this bill", [x.line_id for x in active_lines],
-                                 format_func=lambda i: _line_name(snap, i), disabled=off)
-            if st.form_submit_button("Create draft", type="primary", disabled=off):
+                                 format_func=lambda i: _line_name(snap, i))
+            if st.form_submit_button("Create draft", type="primary"):
                 _act(lambda: bill_service.create_bill(ctx, actor, billing_month=month, total_bill=total,
                                                       due_date=due, line_ids=ids), "Draft bill created.")
 
@@ -146,27 +148,51 @@ def _bills(ctx, actor, snap):
                 _act(lambda: bill_service.close_bill(ctx, actor, bid, confirm=ok), "Billing period closed.")
 
 
-def _toggle_paid(ctx, actor, share_id: str, key: str) -> None:
-    """st.toggle on_change callback: runs once per click, so a failed update is never retried on rerun."""
+def _paid_changed(ctx, actor, share_id: str, key: str) -> None:
+    """Checkbox on_change callback (runs once per click, so a failed update is never retried on rerun).
+    Ticking marks the share paid straight away. Unticking is NOT applied here: the box is put back and a
+    confirmation dialog is queued (see _confirm_unpaid_dialog)."""
     wanted = bool(st.session_state[key])
+    if not wanted:
+        st.session_state[key] = True  # stays ticked until the admin confirms in the dialog
+        st.session_state["mq_confirm_unpaid"] = share_id
+        return
     try:
-        payment_service.set_share_paid(ctx, actor, share_id, wanted)
-        st.session_state["mq_flash"] = "Marked as paid." if wanted else "Marked as unpaid."
+        payment_service.set_share_paid(ctx, actor, share_id, True)
+        st.session_state["mq_flash"] = "Marked as paid."
     except _EXPECTED as exc:
-        st.session_state[key] = not wanted  # revert the switch; nothing was changed
+        st.session_state[key] = False  # nothing was changed
         st.session_state["mq_flash_error"] = str(exc)
     except Exception:
-        st.session_state[key] = not wanted
+        st.session_state[key] = False
         st.session_state["mq_flash_error"] = "Unexpected error; nothing was changed."
+
+
+@st.dialog("Mark as unpaid?", dismissible=False)  # only Yes / Cancel close it, so the choice is always explicit
+def _confirm_unpaid_dialog(ctx, actor, share_id: str, who: str) -> None:
+    st.write(f"Are you sure you want to mark **{who}** as **unpaid**? "
+             "The recorded payment will be reversed (kept in the audit trail).")
+    yes, no = st.columns(2)
+    if yes.button("Yes, mark unpaid", type="primary", key=f"unpaid_yes_{share_id}", width="stretch"):
+        st.session_state.pop("mq_confirm_unpaid", None)
+        try:
+            payment_service.set_share_paid(ctx, actor, share_id, False)
+            st.session_state["mq_flash"] = "Marked as unpaid."
+        except _EXPECTED as exc:
+            st.session_state["mq_flash_error"] = str(exc)
+        except Exception:
+            st.session_state["mq_flash_error"] = "Unexpected error; nothing was changed."
+        st.rerun()
+    if no.button("Cancel", key=f"unpaid_no_{share_id}", width="stretch"):
+        st.session_state.pop("mq_confirm_unpaid", None)
+        st.rerun()
 
 
 def _notify(ctx, actor, share_id: str, mailer) -> None:
     """Button callback: email the owner a payment reminder for this share."""
     try:
         to = reminder_service.send_payment_reminder(ctx, actor, share_id, mailer)
-        simulated = getattr(mailer, "simulated", False)
-        st.session_state["mq_flash"] = (f"Demo mode: reminder to {to} was recorded, not actually emailed." if simulated
-                                        else f"Reminder emailed to {to}.")
+        st.session_state["mq_flash"] = f"Reminder emailed to {to}."
     except DeliveryError:
         st.session_state["mq_flash_error"] = "The email could not be sent. Check the SMTP settings and try again."
     except _EXPECTED as exc:
@@ -203,11 +229,17 @@ def _payments(ctx, actor, snap, mailer):
             row[4].write(format_money(v.outstanding, cur))
             row[5].write(date_label(v.due_date))
             row[6].markdown(ui.status_pill(v.status), unsafe_allow_html=True)
-            key = f"paid_{sid}_{v.paid}"  # key changes with the stored state so the switch always reflects the data
-            row[7].toggle("Paid", value=v.outstanding == 0, key=key, label_visibility="collapsed",
-                          disabled=bill.bill_status == "draft", on_change=_toggle_paid, args=(ctx, actor, sid, key))
+            key = f"paid_{sid}_{v.paid}"  # key changes with the stored state so the box always reflects the data
+            st.session_state.setdefault(key, v.outstanding == 0)  # seeded here so callbacks may also set it
+            row[7].checkbox("Paid", key=key, label_visibility="collapsed",
+                            disabled=bill.bill_status == "draft", on_change=_paid_changed, args=(ctx, actor, sid, key))
             row[8].button("Notify", key=f"notify_{sid}", disabled=bill.bill_status == "draft" or v.outstanding == 0,
                           on_click=_notify, args=(ctx, actor, sid, mailer), help="Email a payment reminder with the due details")
+        if pending := st.session_state.get("mq_confirm_unpaid"):  # stays set until Yes or Cancel is pressed
+            target = next((v for v in views if v.share.share_id == pending), None)
+            if target is not None:
+                who = f"{target.user.name if target.user else 'this user'} ({target.line.line_label if target.line else 'line'})"
+                _confirm_unpaid_dialog(ctx, actor, pending, who)
         if bill.bill_status == "draft":
             ui.render('<div class="mq-meta">Publish the bill to enable the Paid and Notify controls.</div>')
     else:
@@ -224,16 +256,28 @@ def _payments(ctx, actor, snap, mailer):
                                                        confirm_material_change=ok), "Share added.")
     if not views:
         return
+    if bill.bill_status == "closed":
+        return
+    open_key = "mq_edit_share_open"  # the edit section is hidden until the admin clicks the button
+    is_open = st.session_state.get(open_key, False)
+    st.button("Close edit share" if is_open else "Edit share", key="mq_edit_share_btn",
+              on_click=lambda: st.session_state.update({open_key: not is_open}))
+    if not is_open:
+        return
     sid_fmt = lambda i: f"{next(v for v in views if v.share.share_id == i).line.line_label} · due {format_money(next(v for v in views if v.share.share_id == i).amount_due, cur)}"
-    sid = st.selectbox("Edit share", [v.share.share_id for v in views], format_func=sid_fmt, key=f"mq_share_{bid}")
+    sid = st.selectbox("Share to edit", [v.share.share_id for v in views], format_func=sid_fmt, key=f"mq_share_{bid}")
     share = snap.share(sid)
-    if bill.bill_status != "closed":
-        with st.form(f"edit_share_{sid}"):
-            amt = st.text_input("Amount due", value=str(share.amount_due))
-            ok = st.checkbox("I confirm this change to a published share") if bill.bill_status == "published" else False
-            if st.form_submit_button("Update share"):
-                _act(lambda: bill_service.update_share(ctx, actor, sid, amount_due=amt, expected_updated_at=share.updated_at,
-                                                       confirm_material_change=ok), "Share updated.")
+
+    def update():
+        bill_service.update_share(ctx, actor, sid, amount_due=amt, expected_updated_at=share.updated_at,
+                                  confirm_material_change=ok)
+        st.session_state[open_key] = False  # collapse again after a successful save
+
+    with st.form(f"edit_share_{sid}"):
+        amt = st.text_input("Amount due", value=str(share.amount_due))
+        ok = st.checkbox("I confirm this change to a published share") if bill.bill_status == "published" else False
+        if st.form_submit_button("Update share"):
+            _act(update, "Share updated.")
 
 
 def _directory(ctx, actor, snap):

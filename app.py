@@ -187,8 +187,6 @@ def main() -> None:
     with st.sidebar:
         ui.render('<div class="mq-brand">Mobi<b>q</b></div>')
     nav = st.navigation(pages)
-    if rt.demo:
-        st.sidebar.caption("Demo mode: in-memory SAMPLE data.")
     nav.run()
 
 

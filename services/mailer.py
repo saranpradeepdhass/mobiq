@@ -42,7 +42,7 @@ class SmtpMailer:
 
 @dataclass
 class OutboxMailer:
-    """DEMO/TEST ONLY: records messages in memory instead of sending them."""
+    """TEST ONLY: records messages in memory instead of sending them."""
     sent: list[tuple[str, str, str]] = field(default_factory=list)
     simulated = True
 
